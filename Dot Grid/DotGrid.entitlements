@@ -4,11 +4,11 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.Kolte.Dot-Grid</string>
+		<string>group.com.kolteaditya.dotgrid</string>
 	</array>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.Kolte.Dot-Grid</string>
+		<string>iCloud.com.kolteaditya.dotgrid</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>

@@ -10,7 +10,7 @@
 import Foundation
 
 struct GridStore {
-    static let appGroupID = "group.Kolte.Dot-Grid"
+    static let appGroupID = "group.com.kolteaditya.dotgrid"
     static let widgetKind = "DotGridWidget"
     static let friendWidgetKind = "DotGridFriendWidget"
 

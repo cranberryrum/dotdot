@@ -54,7 +54,7 @@ enum AccountState: Equatable {
 final class SharingService {
     static let shared = SharingService()
 
-    private let container = CKContainer(identifier: "iCloud.Kolte.Dot-Grid")
+    private let container = CKContainer(identifier: "iCloud.com.kolteaditya.dotgrid")
     private var db: CKDatabase { container.publicCloudDatabase }
 
     // Record types

@@ -8,10 +8,10 @@ schema. This file lists the one-time setup to make the cross-device loop work.
 
 Automatic signing will register these on the App ID the first time you add them:
 
-- **iCloud → CloudKit**, container `iCloud.Kolte.Dot-Grid`
+- **iCloud → CloudKit**, container `iCloud.com.kolteaditya.dotgrid`
 - **Push Notifications**
 - **Background Modes → Remote notifications**
-- **App Groups** → `group.Kolte.Dot-Grid` (already present)
+- **App Groups** → `group.com.kolteaditya.dotgrid` (already present)
 
 The entitlements file (`Dot Grid/DotGrid.entitlements`) and `Info.plist`
 (`UIBackgroundModes`, `dotdot` URL scheme) are already wired; adding the
