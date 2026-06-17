@@ -264,8 +264,7 @@ final class SharingService {
 
     /// Fetch drawings addressed to me since the last fetch, store each into the
     /// App Group (per sender + latest), and advance the high-water mark.
-    @discardableResult
-    func fetchIncoming(myID: String) async -> Int {
+    func fetchIncoming(myID: String) async throws -> Int {
         let defaults = UserDefaults.standard
         let since = (defaults.object(forKey: lastFetchKey) as? Date) ?? .distantPast
 
@@ -273,9 +272,7 @@ final class SharingService {
         let query = CKQuery(recordType: RT.drawing, predicate: predicate)
         query.sortDescriptors = [NSSortDescriptor(key: "sentAt", ascending: true)]
 
-        guard let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) else {
-            return 0
-        }
+        let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
         let records = results.compactMap { try? $0.1.get() }
 
         var newest = since

@@ -35,6 +35,7 @@ struct ContentView: View {
 
     @State private var showRecipientPicker = false
     @State private var showAddFriend = false
+    @State private var showDebug = false
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -69,6 +70,9 @@ struct ContentView: View {
         .sheet(isPresented: $showAddFriend) {
             AddFriendView()
         }
+        .sheet(isPresented: $showDebug) {
+            DebugView()
+        }
         .overlay(alignment: .bottom) {
             if showClearedToast {
                 clearedToast
@@ -99,6 +103,7 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 if let me = appModel.profile {
                     TokenBadge(token: me.token, size: 34)
+                        .onLongPressGesture { showDebug = true }
                 }
                 Spacer()
                 if appModel.hasPendingSends {

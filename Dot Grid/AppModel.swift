@@ -36,6 +36,28 @@ final class AppModel {
     /// Transient message surfaced as a banner (e.g. pairing results).
     var banner: String?
 
+    /// Last non-fatal CloudKit error, surfaced in the debug panel.
+    private(set) var lastError: String?
+
+    // Debug-panel accessors
+    var userID: String? {
+        if case let .available(id) = account { id } else { nil }
+    }
+    var accountDescription: String {
+        switch account {
+        case .available: "Signed in"
+        case .noAccount: "Not signed into iCloud"
+        case .restricted: "Restricted"
+        case .unknown: "Unknown / unavailable"
+        }
+    }
+
+    /// Re-run the full sync; used by the debug panel's Refresh button.
+    func debugRefresh() async {
+        lastError = nil
+        await bootstrap()
+    }
+
     /// An invite link tapped before onboarding finished; applied afterwards.
     private var pendingInviteToken: String?
 
@@ -84,9 +106,13 @@ final class AppModel {
         }
 
         // Identity / profile
-        if let remote = try? await service.fetchMyProfile(userID: userID) {
-            profile = remote
-            GridStore.shared.saveProfile(remote)
+        do {
+            if let remote = try await service.fetchMyProfile(userID: userID) {
+                profile = remote
+                GridStore.shared.saveProfile(remote)
+            }
+        } catch {
+            lastError = "Profile fetch: \(error.localizedDescription)"
         }
 
         phase = profile == nil ? .onboarding : .ready
@@ -123,7 +149,7 @@ final class AppModel {
     func handlePush() async {
         if case .available = account {} else { account = await service.accountState() }
         guard case let .available(userID) = account else { return }
-        let count = await service.fetchIncoming(myID: userID)
+        let count = (try? await service.fetchIncoming(myID: userID)) ?? 0
         if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
     }
 
@@ -186,9 +212,12 @@ final class AppModel {
 
     private func refreshFriends() async {
         guard case let .available(userID) = account else { return }
-        if let list = try? await service.fetchFriends(myID: userID) {
+        do {
+            let list = try await service.fetchFriends(myID: userID)
             friends = list
             GridStore.shared.saveRoster(list)
+        } catch {
+            lastError = "Friends fetch: \(error.localizedDescription)"
         }
     }
 
@@ -243,8 +272,12 @@ final class AppModel {
 
     private func pullIncoming() async {
         guard case let .available(userID) = account else { return }
-        let count = await service.fetchIncoming(myID: userID)
-        if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
+        do {
+            let count = try await service.fetchIncoming(myID: userID)
+            if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
+        } catch {
+            lastError = "Incoming fetch: \(error.localizedDescription)"
+        }
     }
 
     private func startNetworkMonitor() {
