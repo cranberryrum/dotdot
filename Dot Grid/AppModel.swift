@@ -131,6 +131,7 @@ final class AppModel {
         account = await service.accountState()
         if case .available = account, profile != nil {
             if phase == .iCloudUnavailable { await bootstrap(); return }
+            await refreshFriends()   // pick up friends added by the other party
             await pullIncoming()
             await flushOutbox()
         } else if case .available = account, profile == nil {
@@ -149,6 +150,7 @@ final class AppModel {
     func handlePush() async {
         if case .available = account {} else { account = await service.accountState() }
         guard case let .available(userID) = account else { return }
+        await refreshFriends()   // a push may mean a new friendship, not just a drawing
         let count = (try? await service.fetchIncoming(myID: userID)) ?? 0
         if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
     }

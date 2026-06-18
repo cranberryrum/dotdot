@@ -303,12 +303,24 @@ final class SharingService {
 
     // MARK: - Subscription (push)
 
-    /// Subscribe to drawings addressed to me. Idempotent per user.
+    /// Subscribe to drawings addressed to me AND to new friendships involving me,
+    /// so both parties learn about a pairing in real time. Idempotent per user.
     func ensureSubscription(myID: String) async {
-        let id = "drawings-to-\(myID)"
-        let predicate = NSPredicate(format: "recipientID == %@", myID)
-        let subscription = CKQuerySubscription(
+        await saveSilentSubscription(
+            id: "drawings-to-\(myID)",
             recordType: RT.drawing,
+            predicate: NSPredicate(format: "recipientID == %@", myID)
+        )
+        await saveSilentSubscription(
+            id: "friendships-of-\(myID)",
+            recordType: RT.friendship,
+            predicate: NSPredicate(format: "members CONTAINS %@", myID)
+        )
+    }
+
+    private func saveSilentSubscription(id: String, recordType: String, predicate: NSPredicate) async {
+        let subscription = CKQuerySubscription(
+            recordType: recordType,
             predicate: predicate,
             subscriptionID: id,
             options: [.firesOnRecordCreation]
