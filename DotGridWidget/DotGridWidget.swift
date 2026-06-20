@@ -9,6 +9,7 @@
 
 import AppIntents
 import SwiftUI
+import UIKit
 import WidgetKit
 
 // MARK: - Entry
@@ -20,30 +21,59 @@ struct DotGridEntry: TimelineEntry {
 
 extension DisplayDrawing {
     static func placeholder(at date: Date) -> DisplayDrawing {
-        DisplayDrawing(grid: .sample, senderID: "", senderName: "Friend", token: .placeholder, sentAt: date)
+        .dots(.sample, senderID: "", senderName: "Friend", token: .placeholder, sentAt: date)
     }
 }
 
-// MARK: - Shared widget view
+// MARK: - Shared widget view (renders dots OR photo)
 
 struct DotGridWidgetView: View {
     let drawing: DisplayDrawing?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            GridBoardView(grid: drawing?.grid ?? .empty, spacing: 5)
+            content
             if let drawing, !drawing.senderID.isEmpty {
                 TokenBadge(token: drawing.token, size: 30)
                     .padding(8)
             }
             if drawing == nil {
-                Text("Drawings from friends\nshow up here")
+                Text("Dots & photos from\nfriends show up here")
                     .font(.system(.subheadline, design: .rounded).weight(.semibold))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.45))
             }
         }
         .containerBackground(for: .widget) { Palette.boardBackground }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let drawing {
+            switch drawing.kind {
+            case .photo:
+                if let data = drawing.imageData, let ui = UIImage(data: data) {
+                    Image(uiImage: ui)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                } else {
+                    photoPlaceholder   // never blank or crash
+                }
+            case .dots:
+                GridBoardView(grid: drawing.grid ?? .empty, spacing: 5)
+            }
+        } else {
+            GridBoardView(grid: .empty, spacing: 5)
+        }
+    }
+
+    private var photoPlaceholder: some View {
+        Image(systemName: "photo")
+            .font(.system(size: 36, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.4))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

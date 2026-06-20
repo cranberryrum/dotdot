@@ -20,7 +20,7 @@ struct RootView: View {
             case .onboarding:
                 OnboardingView()
             case .ready, .iCloudUnavailable:
-                ContentView()
+                ComposerView()
             }
         }
         .environment(appModel)

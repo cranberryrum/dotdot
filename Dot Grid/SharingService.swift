@@ -238,10 +238,25 @@ final class SharingService {
 
     // MARK: - Sending
 
-    /// Write one Drawing record per recipient. Returns the recipient IDs that
-    /// failed so the caller can re-queue them. Retries transient errors briefly.
-    func sendDrawing(grid: Grid, to recipientIDs: [String], from profile: Profile) async -> [String] {
-        guard let gridData = try? JSONEncoder().encode(grid) else { return recipientIDs }
+    /// Write one Drawing record per recipient (dots inline, photo as a CKAsset).
+    /// Returns the recipient IDs that failed so the caller can re-queue them.
+    /// Retries transient errors briefly.
+    func sendMessage(kind: MessageKind, grid: Grid?, imageData: Data?,
+                     to recipientIDs: [String], from profile: Profile) async -> [String] {
+        // For photos, stage the (already downscaled) JPEG to a temp file once; each
+        // record gets its own CKAsset pointing at it.
+        var assetURL: URL?
+        if kind == .photo, let imageData {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("jpg")
+            if (try? imageData.write(to: url)) != nil { assetURL = url } else { return recipientIDs }
+        }
+        defer { if let assetURL { try? FileManager.default.removeItem(at: assetURL) } }
+
+        let gridData = (kind == .dots) ? (grid.flatMap { try? JSONEncoder().encode($0) }) : nil
+        if kind == .dots && gridData == nil { return recipientIDs }
+
         var failed: [String] = []
         for recipientID in recipientIDs {
             let ok = await withBackoff(maxAttempts: 3) {
@@ -252,7 +267,9 @@ final class SharingService {
                 record["tokenSymbol"] = profile.token.symbol as CKRecordValue
                 record["tokenColor"] = profile.token.colorIndex as CKRecordValue
                 record["sentAt"] = Date() as CKRecordValue
-                record["gridData"] = gridData as CKRecordValue
+                record["kind"] = kind.rawValue as CKRecordValue
+                if let gridData { record["gridData"] = gridData as CKRecordValue }
+                if let assetURL { record["imageAsset"] = CKAsset(fileURL: assetURL) }
                 _ = try await self.db.save(record)
             }
             if !ok { failed.append(recipientID) }
@@ -278,21 +295,31 @@ final class SharingService {
         var newest = since
         var count = 0
         for record in records {
-            guard
-                let data = record["gridData"] as? Data,
-                let grid = try? JSONDecoder().decode(Grid.self, from: data)
-            else { continue }
             let sentAt = (record["sentAt"] as? Date) ?? Date()
-            let drawing = DisplayDrawing(
-                grid: grid,
-                senderID: record["senderID"] as? String ?? "",
-                senderName: record["senderName"] as? String ?? "Friend",
-                token: IdentityToken(
-                    symbol: record["tokenSymbol"] as? String ?? "✦",
-                    colorIndex: record["tokenColor"] as? Int ?? 0
-                ),
-                sentAt: sentAt
+            let senderID = record["senderID"] as? String ?? ""
+            let senderName = record["senderName"] as? String ?? "Friend"
+            let token = IdentityToken(
+                symbol: record["tokenSymbol"] as? String ?? "✦",
+                colorIndex: record["tokenColor"] as? Int ?? 0
             )
+            let kind = MessageKind(rawValue: record["kind"] as? String ?? "dots") ?? .dots
+
+            let drawing: DisplayDrawing
+            switch kind {
+            case .photo:
+                // The asset is already a downscaled, widget-safe JPEG (the sender
+                // shrank it before upload). CloudKit downloads it to a temp file.
+                guard let asset = record["imageAsset"] as? CKAsset,
+                      let url = asset.fileURL,
+                      let data = try? Data(contentsOf: url)
+                else { continue }
+                drawing = .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
+            case .dots:
+                guard let data = record["gridData"] as? Data,
+                      let grid = try? JSONDecoder().decode(Grid.self, from: data)
+                else { continue }
+                drawing = .dots(grid, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
+            }
             GridStore.shared.saveReceived(drawing)
             newest = max(newest, sentAt)
             count += 1

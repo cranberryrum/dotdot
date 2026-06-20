@@ -225,11 +225,28 @@ final class AppModel {
 
     // MARK: - Sending (local-first)
 
+    /// What the composer hands to the pipe: a dot-grid or a downscaled photo JPEG.
+    enum ComposePayload {
+        case dots(Grid)
+        case photo(Data)
+    }
+
     /// Persist locally FIRST (canvas + widget echo + queue), then push to CloudKit.
-    /// A drawing is never lost to a network hiccup.
-    func send(_ grid: Grid, to recipientIDs: [String]) {
-        GridStore.shared.save(grid)
-        GridStore.shared.saveLocalEcho(grid: grid, token: profile?.token ?? .placeholder)
+    /// A message is never lost to a network hiccup.
+    func send(_ payload: ComposePayload, to recipientIDs: [String]) {
+        let token = profile?.token ?? .placeholder
+        let name = profile?.name ?? "You"
+        let now = Date()
+
+        let echo: DisplayDrawing
+        switch payload {
+        case .dots(let grid):
+            GridStore.shared.save(grid)   // also restores the composer canvas
+            echo = .dots(grid, senderID: "", senderName: name, token: token, sentAt: now)
+        case .photo(let data):
+            echo = .photo(data, senderID: "", senderName: name, token: token, sentAt: now)
+        }
+        GridStore.shared.saveLocalEcho(echo)
         WidgetCenter.shared.reloadAllTimelines()
 
         guard let profile, !recipientIDs.isEmpty else { return }   // local-only send
@@ -237,14 +254,17 @@ final class AppModel {
         lastRecipientIDs = recipientIDs
         UserDefaults.standard.set(recipientIDs, forKey: "lastRecipients")
 
-        let queued = QueuedSend(
-            id: UUID().uuidString,
-            grid: grid,
-            recipientIDs: recipientIDs,
-            senderName: profile.name,
-            token: profile.token,
-            createdAt: Date()
-        )
+        let queued: QueuedSend
+        switch payload {
+        case .dots(let grid):
+            queued = QueuedSend(id: UUID().uuidString, kind: .dots, grid: grid, imageData: nil,
+                                recipientIDs: recipientIDs, senderName: profile.name,
+                                token: profile.token, createdAt: now)
+        case .photo(let data):
+            queued = QueuedSend(id: UUID().uuidString, kind: .photo, grid: nil, imageData: data,
+                                recipientIDs: recipientIDs, senderName: profile.name,
+                                token: profile.token, createdAt: now)
+        }
         outbox.append(queued)
         GridStore.shared.saveOutbox(outbox)
 
@@ -258,12 +278,14 @@ final class AppModel {
         guard let profile, isOnline, !outbox.isEmpty else { return }
         var remaining: [QueuedSend] = []
         for item in outbox {
-            let failed = await service.sendDrawing(grid: item.grid, to: item.recipientIDs, from: profile)
+            let failed = await service.sendMessage(
+                kind: item.kind, grid: item.grid, imageData: item.imageData,
+                to: item.recipientIDs, from: profile
+            )
             if !failed.isEmpty {
-                remaining.append(QueuedSend(
-                    id: item.id, grid: item.grid, recipientIDs: failed,
-                    senderName: item.senderName, token: item.token, createdAt: item.createdAt
-                ))
+                var retry = item
+                retry.recipientIDs = failed
+                remaining.append(retry)
             }
         }
         outbox = remaining

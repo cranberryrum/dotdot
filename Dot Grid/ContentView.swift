@@ -34,8 +34,6 @@ struct ContentView: View {
     @State private var stampWorkTask: Task<Void, Never>?
 
     @State private var showRecipientPicker = false
-    @State private var showAddFriend = false
-    @State private var showDebug = false
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -50,7 +48,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            topBar
             board
             VStack(spacing: 14) {
                 if showStampTray {
@@ -62,16 +59,8 @@ struct ContentView: View {
             Spacer(minLength: 0)
             sendButton
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
-        }
-        .sheet(isPresented: $showAddFriend) {
-            AddFriendView()
-        }
-        .sheet(isPresented: $showDebug) {
-            DebugView()
         }
         .overlay(alignment: .bottom) {
             if showClearedToast {
@@ -85,66 +74,12 @@ struct ContentView: View {
                     )
             }
         }
-        .background(Palette.screenBackground.ignoresSafeArea())
-        .fontDesign(.rounded)
-        .preferredColorScheme(.dark)
         .onAppear {
             paintHaptic.prepare()
             sendHaptic.prepare()
             clearHaptic.prepare()
             fallHaptic.prepare()
         }
-    }
-
-    // MARK: Top bar
-
-    private var topBar: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                if let me = appModel.profile {
-                    TokenBadge(token: me.token, size: 34)
-                        .onLongPressGesture { showDebug = true }
-                }
-                Spacer()
-                if appModel.hasPendingSends {
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock.arrow.circlepath")
-                        Text("\(appModel.outbox.count)")
-                    }
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.55))
-                }
-                Button { showAddFriend = true } label: {
-                    Image(systemName: "person.badge.plus")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(Palette.boardBackground))
-                }
-                .buttonStyle(SquishyButtonStyle())
-            }
-            if !appModel.isSignedIn {
-                iCloudBanner
-            }
-        }
-    }
-
-    private var iCloudBanner: some View {
-        Button {
-            Task { await appModel.onForeground() }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "icloud.slash.fill")
-                Text("Sign into iCloud to send & receive")
-                    .font(.footnote.weight(.semibold))
-                Spacer()
-            }
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.boardBackground))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: Board
@@ -504,7 +439,7 @@ struct ContentView: View {
     /// Persist + ship the drawing (AppModel saves locally first, then CloudKit),
     /// and play the existing send feedback (haptic, morph, dot hop).
     private func finalizeSend(to recipients: [String]) {
-        appModel.send(grid, to: recipients)
+        appModel.send(.dots(grid), to: recipients)
         sendHaptic.impactOccurred()
         sendHaptic.prepare()
 
@@ -560,6 +495,6 @@ struct SquishyButtonStyle: ButtonStyle {
 }
 
 #Preview {
-    ContentView()
+    ComposerView()
         .environment(AppModel.shared)
 }

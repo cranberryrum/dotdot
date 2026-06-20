@@ -39,20 +39,72 @@ struct FriendInfo: Codable, Equatable, Identifiable, Hashable {
     var token: IdentityToken
 }
 
-/// A drawing as displayed on the widget, tagged with who it's from.
+/// What a message carries. A message is either a dot-grid or a photo.
+enum MessageKind: String, Codable { case dots, photo }
+
+/// Geometry the photo frame and widget image share, so framing is WYSIWYG.
+enum WidgetMetrics {
+    /// systemLarge is close to square; a square frame center-crops gracefully.
+    static let aspect: CGFloat = 1.0
+    /// Roughly systemLarge points × 3. The widget must never load more than this.
+    static let targetPixels: CGFloat = 1100
+}
+
+/// A message as displayed on the widget, tagged with who it's from. Holds either
+/// a dot-grid (`grid`) or a downscaled, widget-safe JPEG (`imageData`).
 struct DisplayDrawing: Codable, Equatable {
-    var grid: Grid
+    var kind: MessageKind
+    var grid: Grid?
+    var imageData: Data?
     var senderID: String
     var senderName: String
     var token: IdentityToken
     var sentAt: Date
+
+    init(kind: MessageKind, grid: Grid? = nil, imageData: Data? = nil,
+         senderID: String, senderName: String, token: IdentityToken, sentAt: Date) {
+        self.kind = kind
+        self.grid = grid
+        self.imageData = imageData
+        self.senderID = senderID
+        self.senderName = senderName
+        self.token = token
+        self.sentAt = sentAt
+    }
+
+    static func dots(_ grid: Grid, senderID: String, senderName: String,
+                     token: IdentityToken, sentAt: Date) -> DisplayDrawing {
+        DisplayDrawing(kind: .dots, grid: grid, senderID: senderID,
+                       senderName: senderName, token: token, sentAt: sentAt)
+    }
+
+    static func photo(_ imageData: Data, senderID: String, senderName: String,
+                      token: IdentityToken, sentAt: Date) -> DisplayDrawing {
+        DisplayDrawing(kind: .photo, imageData: imageData, senderID: senderID,
+                       senderName: senderName, token: token, sentAt: sentAt)
+    }
+
+    // Tolerant decode: older cached records had no `kind` and a required `grid`.
+    enum CodingKeys: String, CodingKey { case kind, grid, imageData, senderID, senderName, token, sentAt }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = (try? c.decode(MessageKind.self, forKey: .kind)) ?? .dots
+        grid = try? c.decode(Grid.self, forKey: .grid)
+        imageData = try? c.decode(Data.self, forKey: .imageData)
+        senderID = (try? c.decode(String.self, forKey: .senderID)) ?? ""
+        senderName = (try? c.decode(String.self, forKey: .senderName)) ?? "Friend"
+        token = (try? c.decode(IdentityToken.self, forKey: .token)) ?? .placeholder
+        sentAt = (try? c.decode(Date.self, forKey: .sentAt)) ?? Date()
+    }
 }
 
 /// A send that still needs to reach CloudKit (offline / retrying). Persisted so a
-/// drawing is never lost to a network hiccup.
+/// message is never lost to a network hiccup.
 struct QueuedSend: Codable, Equatable, Identifiable {
     var id: String          // local uuid string
-    var grid: Grid
+    var kind: MessageKind
+    var grid: Grid?
+    var imageData: Data?    // downscaled widget-safe JPEG for photo sends
     var recipientIDs: [String]
     var senderName: String
     var token: IdentityToken

@@ -38,13 +38,10 @@ struct GridStore {
 
     // MARK: - Widget display
 
-    /// Your own outgoing drawing, shown on your widget until a friend sends one.
+    /// Your own outgoing message, shown on your widget until a friend sends one.
     /// `senderID` is empty so the widget shows no "from" badge on your own work.
     /// Works without a profile, so the local loop is solid even before iCloud.
-    func saveLocalEcho(grid: Grid, token: IdentityToken) {
-        let drawing = DisplayDrawing(
-            grid: grid, senderID: "", senderName: "You", token: token, sentAt: Date()
-        )
+    func saveLocalEcho(_ drawing: DisplayDrawing) {
         encode(drawing, forKey: Self.localEchoKey)
     }
 

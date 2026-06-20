@@ -45,7 +45,16 @@ Fields per type (auto-created on first write; types shown for reference):
 - **InviteCode** — `code` (String), `ownerID` (String), `expiresAt` (Date/Time),
   `used` (Int64), `usedBy` (String).
 - **Drawing** — `recipientID`, `senderID`, `senderName`, `tokenSymbol` (String),
-  `tokenColor` (Int64), `sentAt` (Date/Time), `gridData` (Bytes, ~1 KB JSON).
+  `tokenColor` (Int64), `sentAt` (Date/Time), `kind` (String: "dots"|"photo"),
+  `gridData` (Bytes, ~1 KB JSON, dots only), `imageAsset` (Asset, photo only —
+  an already-downscaled widget-safe JPEG).
+
+> **Photo mode:** a photo message sets `kind="photo"` and uploads the framed image
+> as a CKAsset in `imageAsset`. The image is downscaled + JPEG-compressed to
+> ~widget pixel size BEFORE upload, so the widget never loads full-res. No new
+> index is needed for the photo fields (queries still use recipientID + sentAt).
+> No second widget kind — the single systemLarge widget renders dots or photo by
+> the stored `kind`.
 
 The push subscription (`CKQuerySubscription` on `Drawing` where
 `recipientID == me`) is created from code on first launch — no Dashboard step.
