@@ -34,7 +34,7 @@ struct Profile: Codable, Equatable {
 
 /// A paired friend, cached locally so the widget's friend picker works offline.
 struct FriendInfo: Codable, Equatable, Identifiable, Hashable {
-    var id: String          // friend's CloudKit user record name
+    var id: String          // friend's addressable participant ID
     var name: String
     var token: IdentityToken
 }

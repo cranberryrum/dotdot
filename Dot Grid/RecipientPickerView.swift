@@ -51,8 +51,10 @@ struct RecipientPickerView: View {
         List {
             ForEach(appModel.friends) { friend in
                 Button {
-                    if selected.contains(friend.id) { selected.remove(friend.id) }
-                    else { selected.insert(friend.id) }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        if selected.contains(friend.id) { selected.remove(friend.id) }
+                        else { selected.insert(friend.id) }
+                    }
                 } label: {
                     HStack(spacing: 12) {
                         TokenBadge(token: friend.token, size: 36)
@@ -61,6 +63,7 @@ struct RecipientPickerView: View {
                         Image(systemName: selected.contains(friend.id) ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(selected.contains(friend.id) ? friend.token.color : .white.opacity(0.3))
                             .font(.title3)
+                            .contentTransition(.symbolEffect(.replace))
                     }
                 }
                 .listRowBackground(Palette.boardBackground)
@@ -92,6 +95,7 @@ struct RecipientPickerView: View {
         } label: {
             Text(selected.isEmpty ? "PICK SOMEONE" : "SEND TO \(selected.count)")
                 .font(DotFont.heavy(18))
+                .contentTransition(.numericText())
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity).frame(height: 58)
                 .background(

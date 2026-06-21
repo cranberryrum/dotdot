@@ -111,7 +111,7 @@ struct PhotoComposerView: View {
             }
             .foregroundStyle(.white.opacity(0.5))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SquishyButtonStyle())
     }
 
     private func framingGesture(side: CGFloat) -> some Gesture {

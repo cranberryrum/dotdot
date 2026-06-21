@@ -18,6 +18,7 @@
 
 import CloudKit
 import Foundation
+import UIKit
 
 enum PairingError: LocalizedError {
     case codeExpired
@@ -68,6 +69,7 @@ final class SharingService {
     private let lastUserKey = "lastUserRecordName"
     private let lastFetchKey = "lastDrawingFetch"
     private let attemptsKey = "redeemAttempts"
+    private let deviceIDKey = "dotdotDeviceID"
 
     // MARK: - Identity
 
@@ -95,6 +97,26 @@ final class SharingService {
         let previous = defaults.string(forKey: lastUserKey)
         defaults.set(currentUserID, forKey: lastUserKey)
         return previous != nil && previous != currentUserID
+    }
+
+    /// Addressable endpoint for sharing. Profiles still belong to iCloud users,
+    /// while pairings and messages can target a specific device on that account.
+    func participantID(for userID: String) -> String {
+        "\(userID)#\(deviceID)"
+    }
+
+    func profileUserID(from participantID: String) -> String {
+        participantID.split(separator: "#", maxSplits: 1).first.map(String.init) ?? participantID
+    }
+
+    private var deviceID: String {
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: deviceIDKey), !existing.isEmpty {
+            return existing
+        }
+        let generated = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        defaults.set(generated, forKey: deviceIDKey)
+        return generated
     }
 
     // MARK: - Profile
@@ -126,11 +148,12 @@ final class SharingService {
     // MARK: - Pairing
 
     /// Generate a fresh single-use 6-digit code, valid for 10 minutes.
-    func generateCode(ownerID: String) async throws -> String {
+    func generateCode(ownerID: String, ownerParticipantID: String) async throws -> String {
         let code = String(format: "%06d", Int.random(in: 0...999_999))
         let record = CKRecord(recordType: RT.inviteCode)
         record["code"] = code as CKRecordValue
         record["ownerID"] = ownerID as CKRecordValue
+        record["ownerParticipantID"] = ownerParticipantID as CKRecordValue
         record["expiresAt"] = Date().addingTimeInterval(600) as CKRecordValue
         record["used"] = 0 as CKRecordValue
         try await db.save(record)
@@ -143,7 +166,7 @@ final class SharingService {
     }
 
     /// Redeem a typed 6-digit code. Throws a `PairingError` on every failure path.
-    func redeemCode(_ code: String, myID: String) async throws {
+    func redeemCode(_ code: String, myID: String, myParticipantID: String) async throws {
         try checkRateLimit()
 
         let predicate = NSPredicate(format: "code == %@", code)
@@ -159,18 +182,21 @@ final class SharingService {
         guard let record = records.first else { throw PairingError.codeNotFound }
 
         let ownerID = record["ownerID"] as? String ?? ""
+        let ownerParticipantID = record["ownerParticipantID"] as? String ?? ownerID
         let expiresAt = record["expiresAt"] as? Date ?? .distantPast
         let used = (record["used"] as? Int) ?? 0
 
-        if ownerID == myID { throw PairingError.ownCode }
+        if ownerParticipantID == myParticipantID { throw PairingError.ownCode }
+        if ownerParticipantID == ownerID, ownerID == myID { throw PairingError.ownCode }
         if used != 0 { throw PairingError.codeUsed }
         if expiresAt < Date() { throw PairingError.codeExpired }
 
-        try await createFriendship(myID: myID, otherID: ownerID)
+        try await createFriendship(myID: myParticipantID, otherID: ownerParticipantID)
 
         // Burn the code (best-effort; friendship already exists idempotently).
         record["used"] = 1 as CKRecordValue
-        record["usedBy"] = myID as CKRecordValue
+        record["usedBy"] = myParticipantID as CKRecordValue
+        record["usedByUserID"] = myID as CKRecordValue
         _ = try? await db.save(record)
     }
 
@@ -194,7 +220,8 @@ final class SharingService {
     /// Create the single friendship record for a pair. Idempotent: the recordName
     /// is the sorted pair, so simultaneous creates collapse to exactly one record.
     private func createFriendship(myID: String, otherID: String) async throws {
-        let name = "pair_" + [myID, otherID].sorted().joined(separator: "__")
+        let members = [myID, otherID].sorted()
+        let name = "pair_" + members.map(recordNameComponent).joined(separator: "__")
         let recordID = CKRecord.ID(recordName: name)
 
         if (try? await db.record(for: recordID)) != nil {
@@ -202,9 +229,9 @@ final class SharingService {
         }
 
         let record = CKRecord(recordType: RT.friendship, recordID: recordID)
-        record["members"] = [myID, otherID].sorted() as CKRecordValue
-        record["userA"] = [myID, otherID].sorted()[0] as CKRecordValue
-        record["userB"] = [myID, otherID].sorted()[1] as CKRecordValue
+        record["members"] = members as CKRecordValue
+        record["userA"] = members[0] as CKRecordValue
+        record["userB"] = members[1] as CKRecordValue
         do {
             _ = try await db.save(record)
         } catch let error as CKError where error.code == .serverRecordChanged {
@@ -215,22 +242,28 @@ final class SharingService {
 
     // MARK: - Friends
 
-    func fetchFriends(myID: String) async throws -> [FriendInfo] {
-        let predicate = NSPredicate(format: "members CONTAINS %@", myID)
-        let query = CKQuery(recordType: RT.friendship, predicate: predicate)
-        let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
-        let friendships = results.compactMap { try? $0.1.get() }
+    func fetchFriends(myID: String, myParticipantID: String) async throws -> [FriendInfo] {
+        var friendshipsByID: [CKRecord.ID: CKRecord] = [:]
+        for id in Set([myParticipantID, myID]) {
+            let predicate = NSPredicate(format: "members CONTAINS %@", id)
+            let query = CKQuery(recordType: RT.friendship, predicate: predicate)
+            let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
+            for record in results.compactMap({ try? $0.1.get() }) {
+                friendshipsByID[record.recordID] = record
+            }
+        }
 
-        let otherIDs: [String] = friendships.compactMap { record in
+        let otherIDs: [String] = friendshipsByID.values.compactMap { record in
             let members = (record["members"] as? [String]) ?? []
-            return members.first { $0 != myID }
+            return members.first { $0 != myParticipantID && $0 != myID }
         }
 
         var friends: [FriendInfo] = []
         for id in Set(otherIDs) {
-            if let record = try? await db.record(for: CKRecord.ID(recordName: id)),
+            let profileID = profileUserID(from: id)
+            if let record = try? await db.record(for: CKRecord.ID(recordName: profileID)),
                let profile = profile(from: record) {
-                friends.append(FriendInfo(id: profile.id, name: profile.name, token: profile.token))
+                friends.append(FriendInfo(id: id, name: profile.name, token: profile.token))
             }
         }
         return friends.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -242,7 +275,7 @@ final class SharingService {
     /// Returns the recipient IDs that failed so the caller can re-queue them.
     /// Retries transient errors briefly.
     func sendMessage(kind: MessageKind, grid: Grid?, imageData: Data?,
-                     to recipientIDs: [String], from profile: Profile) async -> [String] {
+                     to recipientIDs: [String], from profile: Profile, senderID: String) async -> [String] {
         // For photos, stage the (already downscaled) JPEG to a temp file once; each
         // record gets its own CKAsset pointing at it.
         var assetURL: URL?
@@ -262,7 +295,7 @@ final class SharingService {
             let ok = await withBackoff(maxAttempts: 3) {
                 let record = CKRecord(recordType: RT.drawing)
                 record["recipientID"] = recipientID as CKRecordValue
-                record["senderID"] = profile.id as CKRecordValue
+                record["senderID"] = senderID as CKRecordValue
                 record["senderName"] = profile.name as CKRecordValue
                 record["tokenSymbol"] = profile.token.symbol as CKRecordValue
                 record["tokenColor"] = profile.token.colorIndex as CKRecordValue
@@ -281,19 +314,26 @@ final class SharingService {
 
     /// Fetch drawings addressed to me since the last fetch, store each into the
     /// App Group (per sender + latest), and advance the high-water mark.
-    func fetchIncoming(myID: String) async throws -> Int {
+    func fetchIncoming(recipientIDs: [String]) async throws -> Int {
         let defaults = UserDefaults.standard
         let since = (defaults.object(forKey: lastFetchKey) as? Date) ?? .distantPast
 
-        let predicate = NSPredicate(format: "recipientID == %@ AND sentAt > %@", myID, since as NSDate)
-        let query = CKQuery(recordType: RT.drawing, predicate: predicate)
-        query.sortDescriptors = [NSSortDescriptor(key: "sentAt", ascending: true)]
-
-        let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
-        let records = results.compactMap { try? $0.1.get() }
+        var recordsByID: [CKRecord.ID: CKRecord] = [:]
+        for id in Set(recipientIDs) {
+            let predicate = NSPredicate(format: "recipientID == %@ AND sentAt > %@", id, since as NSDate)
+            let query = CKQuery(recordType: RT.drawing, predicate: predicate)
+            query.sortDescriptors = [NSSortDescriptor(key: "sentAt", ascending: true)]
+            let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
+            for record in results.compactMap({ try? $0.1.get() }) {
+                recordsByID[record.recordID] = record
+            }
+        }
 
         var newest = since
         var count = 0
+        let records = recordsByID.values.sorted {
+            (($0["sentAt"] as? Date) ?? .distantPast) < (($1["sentAt"] as? Date) ?? .distantPast)
+        }
         for record in records {
             let sentAt = (record["sentAt"] as? Date) ?? Date()
             let senderID = record["senderID"] as? String ?? ""
@@ -332,17 +372,19 @@ final class SharingService {
 
     /// Subscribe to drawings addressed to me AND to new friendships involving me,
     /// so both parties learn about a pairing in real time. Idempotent per user.
-    func ensureSubscription(myID: String) async {
-        await saveSilentSubscription(
-            id: "drawings-to-\(myID)",
-            recordType: RT.drawing,
-            predicate: NSPredicate(format: "recipientID == %@", myID)
-        )
-        await saveSilentSubscription(
-            id: "friendships-of-\(myID)",
-            recordType: RT.friendship,
-            predicate: NSPredicate(format: "members CONTAINS %@", myID)
-        )
+    func ensureSubscription(userID: String, participantID: String) async {
+        for id in Set([userID, participantID]) {
+            await saveSilentSubscription(
+                id: "drawings-to-\(subscriptionIDComponent(id))",
+                recordType: RT.drawing,
+                predicate: NSPredicate(format: "recipientID == %@", id)
+            )
+            await saveSilentSubscription(
+                id: "friendships-of-\(subscriptionIDComponent(id))",
+                recordType: RT.friendship,
+                predicate: NSPredicate(format: "members CONTAINS %@", id)
+            )
+        }
     }
 
     private func saveSilentSubscription(id: String, recordType: String, predicate: NSPredicate) async {
@@ -372,6 +414,17 @@ final class SharingService {
             token: token,
             inviteToken: record["inviteToken"] as? String ?? ""
         )
+    }
+
+    private func recordNameComponent(_ id: String) -> String {
+        Data(id.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func subscriptionIDComponent(_ id: String) -> String {
+        id.replacingOccurrences(of: "#", with: "-")
     }
 
     private func checkRateLimit() throws {

@@ -43,7 +43,7 @@ struct RootView: View {
     @ViewBuilder
     private var bannerOverlay: some View {
         if let text = appModel.banner {
-            Text(text)
+            Text(text.lowercased())
                 .font(DotFont.ui(15, weight: .bold))
                 .foregroundStyle(Theme.ink)
                 .padding(.horizontal, 18).padding(.vertical, 12)

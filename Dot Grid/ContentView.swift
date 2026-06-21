@@ -365,14 +365,14 @@ struct ContentView: View {
             Image(systemName: "sparkles")
                 .font(.footnote.weight(.bold))
                 .foregroundStyle(.white.opacity(0.6))
-            Text("Poof! Grid cleared")
+            Text("poof! grid cleared")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
             Spacer(minLength: 8)
             Button {
                 undoClear()
             } label: {
-                Text("Undo")
+                Text("undo")
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.black.opacity(0.85))
                     .padding(.horizontal, 16)

@@ -119,7 +119,7 @@ final class AppModel {
 
         guard profile != nil else { return }   // finish onboarding first
 
-        await service.ensureSubscription(myID: userID)
+        await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
         await refreshFriends()
         await pullIncoming()
         await flushOutbox()
@@ -151,7 +151,7 @@ final class AppModel {
         if case .available = account {} else { account = await service.accountState() }
         guard case let .available(userID) = account else { return }
         await refreshFriends()   // a push may mean a new friendship, not just a drawing
-        let count = (try? await service.fetchIncoming(myID: userID)) ?? 0
+        let count = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
         if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
     }
 
@@ -164,7 +164,7 @@ final class AppModel {
         let saved = try await service.saveMyProfile(userID: userID, name: name, token: token, existing: profile)
         profile = saved
         GridStore.shared.saveProfile(saved)
-        await service.ensureSubscription(myID: userID)
+        await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
         if let token = pendingInviteToken { await applyInvite(token: token) }
         await refreshFriends()
         await pullIncoming()
@@ -177,7 +177,7 @@ final class AppModel {
 
     func generateCode() async throws -> String {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
-        return try await service.generateCode(ownerID: userID)
+        return try await service.generateCode(ownerID: userID, ownerParticipantID: participantID(for: userID))
     }
 
     func inviteLink() -> URL? {
@@ -186,7 +186,7 @@ final class AppModel {
 
     func addFriend(byCode code: String) async throws {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
-        try await service.redeemCode(code, myID: userID)
+        try await service.redeemCode(code, myID: userID, myParticipantID: participantID(for: userID))
         await refreshFriends()
     }
 
@@ -215,9 +215,10 @@ final class AppModel {
     private func refreshFriends() async {
         guard case let .available(userID) = account else { return }
         do {
-            let list = try await service.fetchFriends(myID: userID)
+            let list = try await service.fetchFriends(myID: userID, myParticipantID: participantID(for: userID))
             friends = list
             GridStore.shared.saveRoster(list)
+            if lastError?.hasPrefix("Friends fetch:") == true { lastError = nil }
         } catch {
             lastError = "Friends fetch: \(error.localizedDescription)"
         }
@@ -276,11 +277,12 @@ final class AppModel {
 
     func flushOutbox() async {
         guard let profile, isOnline, !outbox.isEmpty else { return }
+        let senderID = participantID(for: profile.id)
         var remaining: [QueuedSend] = []
         for item in outbox {
             let failed = await service.sendMessage(
                 kind: item.kind, grid: item.grid, imageData: item.imageData,
-                to: item.recipientIDs, from: profile
+                to: item.recipientIDs, from: profile, senderID: senderID
             )
             if !failed.isEmpty {
                 var retry = item
@@ -297,11 +299,20 @@ final class AppModel {
     private func pullIncoming() async {
         guard case let .available(userID) = account else { return }
         do {
-            let count = try await service.fetchIncoming(myID: userID)
+            let count = try await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))
+            if lastError?.hasPrefix("Incoming fetch:") == true { lastError = nil }
             if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }
+    }
+
+    private func participantID(for userID: String) -> String {
+        service.participantID(for: userID)
+    }
+
+    private func incomingRecipientIDs(for userID: String) -> [String] {
+        [userID, participantID(for: userID)]
     }
 
     private func startNetworkMonitor() {
