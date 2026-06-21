@@ -56,7 +56,7 @@ struct RecipientPickerView: View {
                 } label: {
                     HStack(spacing: 12) {
                         TokenBadge(token: friend.token, size: 36)
-                        Text(friend.name).font(.headline).foregroundStyle(.white)
+                        Text(friend.name).font(DotFont.ui(17, weight: .bold)).foregroundStyle(.white)
                         Spacer()
                         Image(systemName: selected.contains(friend.id) ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(selected.contains(friend.id) ? friend.token.color : .white.opacity(0.3))
@@ -73,11 +73,11 @@ struct RecipientPickerView: View {
         VStack(spacing: 16) {
             Image(systemName: "person.2.slash")
                 .font(.system(size: 44)).foregroundStyle(.white.opacity(0.4))
-            Text("No friends yet").font(.title3.weight(.bold)).foregroundStyle(.white)
+            Text("No friends yet").font(DotFont.heavy(20)).foregroundStyle(.white)
             Text("Add a friend to start sending.")
-                .font(.subheadline).foregroundStyle(.white.opacity(0.5))
+                .font(DotFont.ui(15)).foregroundStyle(.white.opacity(0.5))
             Button("Add a friend") { showAddFriend = true }
-                .font(.headline.weight(.bold))
+                .font(DotFont.ui(16, weight: .bold))
                 .foregroundStyle(.black.opacity(0.85))
                 .padding(.horizontal, 22).padding(.vertical, 12)
                 .background(Capsule().fill(.white))
@@ -90,11 +90,15 @@ struct RecipientPickerView: View {
             onSend(Array(selected))
             dismiss()
         } label: {
-            Text(selected.isEmpty ? "Pick someone" : "Send to \(selected.count)")
-                .font(.title3.weight(.heavy))
+            Text(selected.isEmpty ? "PICK SOMEONE" : "SEND TO \(selected.count)")
+                .font(DotFont.heavy(18))
                 .foregroundStyle(.white)
-                .frame(maxWidth: .infinity).frame(height: 56)
-                .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Palette.color(at: 0)))
+                .frame(maxWidth: .infinity).frame(height: 58)
+                .background(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(Theme.blue)
+                        .neonGlow(Theme.blue, tight: 6, soft: 16, enabled: !selected.isEmpty)
+                )
         }
         .buttonStyle(SquishyButtonStyle())
         .disabled(selected.isEmpty)

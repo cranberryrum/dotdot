@@ -107,7 +107,7 @@ struct PhotoComposerView: View {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 40, weight: .semibold))
                 Text("Choose a photo")
-                    .font(.headline.weight(.semibold))
+                    .font(DotFont.ui(16, weight: .bold))
             }
             .foregroundStyle(.white.opacity(0.5))
         }
@@ -152,7 +152,7 @@ struct PhotoComposerView: View {
                 Image(systemName: systemImage)
                 Text(title)
             }
-            .font(.subheadline.weight(.bold))
+            .font(DotFont.ui(15, weight: .bold))
             .foregroundStyle(.white.opacity(0.85))
             .frame(maxWidth: .infinity)
             .frame(height: 52)
@@ -175,17 +175,21 @@ struct PhotoComposerView: View {
 
     private var sendButton: some View {
         Button { attemptSend() } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Image(systemName: justSent ? "checkmark" : "paperplane.fill")
                     .contentTransition(.symbolEffect(.replace.downUp))
-                Text(justSent ? "Sent!" : "Send")
+                Text(justSent ? "SENT!" : "SEND")
                     .contentTransition(.opacity)
             }
-            .font(.title3.weight(.heavy))
+            .font(DotFont.heavy(19))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
-            .frame(height: 60)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Palette.color(at: 0)))
+            .frame(height: 62)
+            .background(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(Theme.blue)
+                    .neonGlow(Theme.blue, tight: 6, soft: 18, enabled: image != nil)
+            )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
             .opacity(image == nil ? 0.5 : 1)
         }

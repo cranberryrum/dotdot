@@ -29,6 +29,9 @@ struct GridBoardView: View {
     var fallTrigger: Int = 0
     var fallDistance: CGFloat = 0   // 0 → no falling (widget / static render)
     var liftTrigger: Int = 0
+    /// Scales the lit-dot neon glow. 1 in the app; the widget dials it back so the
+    /// bloom doesn't muddy at true widget size.
+    var glowStrength: CGFloat = 1
 
     var body: some View {
         VStack(spacing: spacing) {
@@ -38,7 +41,8 @@ struct GridBoardView: View {
                         CellChipView(
                             cell: grid[row, column],
                             fall: fall(row: row, column: column),
-                            lift: lift(row: row, column: column)
+                            lift: lift(row: row, column: column),
+                            glowStrength: glowStrength
                         )
                     }
                 }
@@ -69,14 +73,19 @@ struct CellChipView: View {
     let cell: Cell?
     var fall: ChipFall? = nil
     var lift: ChipLift? = nil
+    var glowStrength: CGFloat = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
             let side = min(proxy.size.width, proxy.size.height)
             ZStack {
-                RoundedRectangle(cornerRadius: side * 0.3, style: .continuous)
+                RoundedRectangle(cornerRadius: side * 0.32, style: .continuous)
                     .fill(Palette.emptyChip)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: side * 0.32, style: .continuous)
+                            .strokeBorder(Palette.cellRim, lineWidth: max(1, side * 0.04))
+                    )
                 if let cell {
                     chip(cell: cell, side: side)
                 }
@@ -89,9 +98,16 @@ struct CellChipView: View {
     @ViewBuilder
     private func chip(cell: Cell, side: CGFloat) -> some View {
         let chipSide = side * cell.size.scale
-        let shape = RoundedRectangle(cornerRadius: chipSide * 0.3, style: .continuous)
-            .fill(Palette.color(at: cell.colorIndex))
+        let accent = Palette.color(at: cell.colorIndex)
+        let shape = RoundedRectangle(cornerRadius: chipSide * 0.4, style: .continuous)
+            .fill(accent)
             .frame(width: chipSide, height: chipSide)
+            .neonGlow(
+                accent,
+                tight: chipSide * 0.16 * glowStrength,
+                soft: chipSide * 0.46 * glowStrength,
+                enabled: glowStrength > 0
+            )
             .transition(chipTransition)
 
         if reduceMotion {

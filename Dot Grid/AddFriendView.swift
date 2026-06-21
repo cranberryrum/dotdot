@@ -59,11 +59,11 @@ struct AddFriendView: View {
 
     private var header: some View {
         VStack(spacing: 6) {
-            Text("Add a friend")
-                .font(.title2.weight(.bold))
+            Text("ADD A FRIEND")
+                .font(DotFont.heavy(22))
                 .foregroundStyle(.white)
             Text("Pairing is instant — no requests to approve.")
-                .font(.subheadline)
+                .font(DotFont.ui(14))
                 .foregroundStyle(.white.opacity(0.5))
         }
         .padding(.top, 8)
@@ -73,11 +73,11 @@ struct AddFriendView: View {
 
     private var enterCodeCard: some View {
         card {
-            Text("Enter a code")
-                .font(.headline).foregroundStyle(.white)
+            Text("ENTER A CODE")
+                .font(DotFont.heavy(15)).foregroundStyle(.white)
             TextField("", text: $codeEntry, prompt: Text("6-digit code").foregroundStyle(.white.opacity(0.4)))
                 .keyboardType(.numberPad)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(DotFont.mono(28, bold: true))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.white)
                 .padding(.vertical, 12)
@@ -120,16 +120,16 @@ struct AddFriendView: View {
 
     private var shareCard: some View {
         card {
-            Text("Share your invite")
-                .font(.headline).foregroundStyle(.white)
+            Text("SHARE YOUR INVITE")
+                .font(DotFont.heavy(15)).foregroundStyle(.white)
 
             if let myCode {
                 Text(myCode)
-                    .font(.system(size: 40, weight: .heavy, design: .rounded))
+                    .font(DotFont.mono(40, bold: true))
                     .tracking(8)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.lime)
                 Text("Single-use · expires in 10 minutes")
-                    .font(.caption).foregroundStyle(.white.opacity(0.5))
+                    .font(DotFont.mono(11)).foregroundStyle(.white.opacity(0.5))
             }
 
             Button {

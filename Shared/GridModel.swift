@@ -72,19 +72,24 @@ enum Palette {
         let prefersDarkText: Bool
     }
 
+    /// The loud chrome palette — what dots light up in (picked in the composer).
     static let entries: [Entry] = [
-        Entry(color: Color(red: 1.00, green: 0.31, blue: 0.04), prefersDarkText: false), // signal orange
-        Entry(color: Color(red: 1.00, green: 0.49, blue: 0.70), prefersDarkText: false), // bubblegum pink
-        Entry(color: Color(red: 1.00, green: 0.82, blue: 0.29), prefersDarkText: true),  // butter yellow
-        Entry(color: Color(red: 0.33, green: 0.88, blue: 0.65), prefersDarkText: true),  // mint
-        Entry(color: Color(red: 0.48, green: 0.61, blue: 1.00), prefersDarkText: false), // periwinkle
+        Entry(color: Theme.blue,   prefersDarkText: false),
+        Entry(color: Theme.pink,   prefersDarkText: false),
+        Entry(color: Theme.lime,   prefersDarkText: true),
+        Entry(color: Theme.red,    prefersDarkText: false),
+        Entry(color: Theme.yellow, prefersDarkText: true),
+        Entry(color: Theme.mint,   prefersDarkText: true),
+        Entry(color: Theme.peri,   prefersDarkText: false),
+        Entry(color: Theme.cream,  prefersDarkText: true),
     ]
 
     static func color(at index: Int) -> Color {
         entries.indices.contains(index) ? entries[index].color : entries[0].color
     }
 
-    static let screenBackground = Color(red: 0.043, green: 0.043, blue: 0.055)
-    static let boardBackground = Color(red: 0.094, green: 0.094, blue: 0.118)
-    static let emptyChip = Color.white.opacity(0.07)
+    static let screenBackground = Theme.ink     // app / editor background
+    static let boardBackground = Theme.panel    // grid panel surface
+    static let emptyChip = Theme.cellOff        // empty dot fill
+    static let cellRim = Theme.cellRim          // rim around empty dots
 }

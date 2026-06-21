@@ -47,8 +47,9 @@ struct ContentView: View {
     private enum DragMode { case paint, erase }
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             board
+            metadataRow
             VStack(spacing: 14) {
                 if showStampTray {
                     stampTray
@@ -150,16 +151,32 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Controls
+    // MARK: Metadata + controls
+
+    private var filledCount: Int { grid.cells.lazy.filter { $0 != nil }.count }
+
+    private var metadataRow: some View {
+        HStack {
+            Text("\(Grid.side)×\(Grid.side) CANVAS").metaLabel()
+            Spacer()
+            Text("\(filledCount) \(filledCount == 1 ? "DOT" : "DOTS")").metaLabel()
+        }
+        .padding(.horizontal, 4)
+    }
 
     private var controls: some View {
-        HStack(spacing: 9) {
-            sizeButton
-            ForEach(Palette.entries.indices, id: \.self) { index in
-                swatch(index)
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                ForEach(Palette.entries.indices, id: \.self) { index in
+                    swatch(index)
+                }
             }
-            shapesButton
-            clearButton
+            HStack(spacing: 12) {
+                sizeButton
+                shapesButton
+                Spacer()
+                clearButton
+            }
         }
     }
 
@@ -201,8 +218,7 @@ struct ContentView: View {
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
             }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: .infinity)
+            .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
     }
@@ -228,8 +244,7 @@ struct ContentView: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white.opacity(0.75))
             }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: .infinity)
+            .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
     }
@@ -247,8 +262,7 @@ struct ContentView: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white.opacity(showStampTray ? 0.95 : 0.75))
             }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: .infinity)
+            .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
     }
@@ -461,23 +475,24 @@ struct ContentView: View {
         Button {
             attemptSend()
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Image(systemName: justSent ? "checkmark" : "paperplane.fill")
                     .contentTransition(.symbolEffect(.replace.downUp))
-                Text(justSent ? "Sent!" : "Send")
+                Text(justSent ? "SENT!" : "SEND")
                     .contentTransition(.opacity)
             }
-            .font(.title3.weight(.heavy))
+            .font(DotFont.heavy(19))
             .foregroundStyle(
                 Palette.entries[selectedColorIndex].prefersDarkText
-                    ? Color.black.opacity(0.8)
+                    ? Color.black.opacity(0.85)
                     : .white
             )
             .frame(maxWidth: .infinity)
-            .frame(height: 60)
+            .frame(height: 62)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(Palette.color(at: selectedColorIndex))
+                    .neonGlow(Palette.color(at: selectedColorIndex), tight: 6, soft: 18)
             )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
         }

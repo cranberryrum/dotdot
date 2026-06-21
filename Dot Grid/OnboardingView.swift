@@ -30,32 +30,48 @@ struct OnboardingView: View {
             if step == 1 { profileStep } else { friendStep }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Palette.screenBackground.ignoresSafeArea())
-        .fontDesign(.rounded)
+        .background {
+            ZStack {
+                Palette.screenBackground
+                HalftoneField(color: .white.opacity(0.05))
+            }
+            .ignoresSafeArea()
+        }
         .preferredColorScheme(.dark)
+    }
+
+    private var wordmark: some View {
+        HStack(spacing: 0) {
+            Text("dot").foregroundStyle(Theme.blue)
+            Text("dot").foregroundStyle(Theme.pink)
+        }
+        .font(DotFont.bubble(40))
     }
 
     // MARK: Step 1 — name + token
 
     private var profileStep: some View {
-        VStack(spacing: 26) {
+        VStack(spacing: 24) {
             Spacer(minLength: 8)
 
-            TokenBadge(token: token, size: 96)
+            wordmark
+
+            TokenBadge(token: token, size: 92)
+                .neonGlow(token.color, tight: 6, soft: 22)
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: token)
 
             VStack(spacing: 6) {
-                Text("What's your name?")
-                    .font(.title2.weight(.bold))
+                Text("WHAT'S YOUR NAME?")
+                    .font(DotFont.heavy(22))
                     .foregroundStyle(.white)
                 Text("This is how friends see you.")
-                    .font(.subheadline)
+                    .font(DotFont.ui(15))
                     .foregroundStyle(.white.opacity(0.5))
             }
 
             TextField("", text: $name, prompt: Text("Your name").foregroundStyle(.white.opacity(0.4)))
                 .textInputAutocapitalization(.words)
-                .font(.title3.weight(.semibold))
+                .font(DotFont.ui(20, weight: .semibold))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.white)
                 .padding(.vertical, 14)
@@ -81,11 +97,11 @@ struct OnboardingView: View {
             .padding(.bottom, 16)
 
             if let errorText {
-                Text(errorText).font(.footnote).foregroundStyle(.red.opacity(0.9))
+                Text(errorText).font(DotFont.ui(13)).foregroundStyle(.red.opacity(0.9))
                     .padding(.bottom, 8)
             }
         }
-        .padding(.top, 40)
+        .padding(.top, 24)
     }
 
     private var symbolPicker: some View {
@@ -143,7 +159,7 @@ struct OnboardingView: View {
             HStack {
                 Spacer()
                 Button("Skip") { appModel.markReady() }
-                    .font(.headline)
+                    .font(DotFont.ui(16, weight: .bold))
                     .foregroundStyle(.white.opacity(0.6))
             }
             .padding(.horizontal, 20)
@@ -154,11 +170,15 @@ struct OnboardingView: View {
     }
 
     private func primaryLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.title3.weight(.heavy))
-            .foregroundStyle(token.prefersDarkText ? Color.black.opacity(0.8) : .white)
+        Text(text.uppercased())
+            .font(DotFont.heavy(18))
+            .foregroundStyle(token.prefersDarkText ? Color.black.opacity(0.85) : .white)
             .frame(maxWidth: .infinity)
-            .frame(height: 58)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(token.color))
+            .frame(height: 60)
+            .background(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .fill(token.color)
+                    .neonGlow(token.color, tight: 6, soft: 18)
+            )
     }
 }

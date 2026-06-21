@@ -49,18 +49,19 @@ struct ComposerView: View {
     private var topBar: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                if let me = appModel.profile {
-                    TokenBadge(token: me.token, size: 34)
-                        .onLongPressGesture { showDebug = true }
-                }
+                wordmark
                 Spacer()
                 if appModel.hasPendingSends {
                     HStack(spacing: 4) {
                         Image(systemName: "clock.arrow.circlepath")
                         Text("\(appModel.outbox.count)")
                     }
-                    .font(.caption.weight(.bold))
+                    .font(DotFont.mono(12, bold: true))
                     .foregroundStyle(.white.opacity(0.55))
+                }
+                if let me = appModel.profile {
+                    TokenBadge(token: me.token, size: 32)
+                        .onLongPressGesture { showDebug = true }
                 }
                 Button { showAddFriend = true } label: {
                     Image(systemName: "person.badge.plus")
@@ -75,6 +76,15 @@ struct ComposerView: View {
                 iCloudBanner
             }
         }
+    }
+
+    /// The DOTDOT wordmark in Bagel Fat One, two playful colors.
+    private var wordmark: some View {
+        HStack(spacing: 0) {
+            Text("dot").foregroundStyle(Theme.blue)
+            Text("dot").foregroundStyle(Theme.pink)
+        }
+        .font(DotFont.bubble(30))
     }
 
     private var iCloudBanner: some View {
@@ -115,14 +125,14 @@ struct ComposerView: View {
                 Image(systemName: icon)
                 Text(label)
             }
-            .font(.subheadline.weight(.bold))
-            .foregroundStyle(selected ? .white : .white.opacity(0.5))
+            .font(DotFont.ui(15, weight: .bold))
+            .foregroundStyle(selected ? Theme.ink : .white.opacity(0.5))
             .frame(maxWidth: .infinity)
             .frame(height: 38)
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(.white.opacity(0.14))
+                        .fill(Theme.cream)
                         .matchedGeometryEffect(id: "modePill", in: modePill)
                 }
             }

@@ -44,10 +44,10 @@ struct RootView: View {
     private var bannerOverlay: some View {
         if let text = appModel.banner {
             Text(text)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
+                .font(DotFont.ui(15, weight: .bold))
+                .foregroundStyle(Theme.ink)
                 .padding(.horizontal, 18).padding(.vertical, 12)
-                .background(Capsule().fill(Color(red: 0.16, green: 0.16, blue: 0.20)).shadow(color: .black.opacity(0.4), radius: 12, y: 4))
+                .background(Capsule().fill(Theme.cream).shadow(color: .black.opacity(0.4), radius: 12, y: 4))
                 .padding(.top, 8)
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .task(id: text) {
