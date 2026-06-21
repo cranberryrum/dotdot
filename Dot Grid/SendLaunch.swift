@@ -42,7 +42,7 @@ struct LaunchCopy: View {
     @State private var launched = false
 
     var body: some View {
-        GridBoardView(grid: grid, spacing: spacing)
+        GridBoardView(grid: grid, spacing: spacing, glowStrength: 0)   // flat copy = smooth flight
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Palette.boardBackground))
             .scaleEffect(launched ? 0.18 : (lifted ? 1.06 : 1.0))

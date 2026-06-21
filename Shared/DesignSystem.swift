@@ -70,20 +70,27 @@ extension Text {
 
 extension View {
     /// Two stacked colored shadows — a tight bright one and a wider soft one.
-    /// `tight`/`soft` radii are tunable; the widget dials them back (glow renders
-    /// heavier there).
+    /// When `enabled` is false we apply NO shadow at all (a `.clear` shadow still
+    /// costs an offscreen blur pass), so motion stays smooth: callers turn the glow
+    /// off while many dots animate, on at rest.
+    @ViewBuilder
     func neonGlow(_ color: Color, tight: CGFloat = 4, soft: CGFloat = 12, enabled: Bool = true) -> some View {
-        self
-            .shadow(color: enabled ? color.opacity(0.85) : .clear, radius: tight)
-            .shadow(color: enabled ? color.opacity(0.55) : .clear, radius: soft)
+        if enabled {
+            self
+                .shadow(color: color.opacity(0.85), radius: tight)
+                .shadow(color: color.opacity(0.55), radius: soft)
+        } else {
+            self
+        }
     }
 }
 
 // MARK: - Motion (curves from the spec's table)
 
 enum Motion {
-    /// dotpop — scale .35 → 1.22 → 1, on placement.
-    static let dotpop = Animation.spring(response: 0.3, dampingFraction: 0.5)
+    /// dotpop — a quick pop on placement. Bounce kept subtle so rapid drawing
+    /// reads smooth (Apple-native feel) rather than jittery.
+    static let dotpop = Animation.spring(response: 0.26, dampingFraction: 0.72)
     /// reduce-motion stand-in for any of the springy ones.
     static let reduced = Animation.easeOut(duration: 0.12)
     /// popin / flashpop style snappy entrance.

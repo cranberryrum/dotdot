@@ -31,6 +31,8 @@ struct ContentView: View {
     @State private var liftTrigger = 0
     @State private var ripples: [RippleEvent] = []
     @State private var launchGrid: Grid?
+    @State private var isDrawing = false
+    @State private var strokeRippled = false
 
     @State private var showStampTray = false
     @State private var stampWorkTask: Task<Void, Never>?
@@ -95,7 +97,8 @@ struct ContentView: View {
                 spacing: boardSpacing,
                 fallTrigger: fallTrigger,
                 fallDistance: boardSide + 60,
-                liftTrigger: liftTrigger
+                liftTrigger: liftTrigger,
+                glowStrength: boardGlow
             )
             .overlay {
                 ForEach(ripples) { ripple in
@@ -106,11 +109,14 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        if !isDrawing { isDrawing = true }
                         paint(at: value.location, boardSide: boardSide)
                     }
                     .onEnded { _ in
                         dragMode = nil
                         visitedCells.removeAll()
+                        isDrawing = false
+                        strokeRippled = false
                     }
             )
         }
@@ -156,12 +162,21 @@ struct ContentView: View {
             }
             paintHaptic.impactOccurred()
             paintHaptic.prepare()
-            emitRipple(at: point)
+            if !strokeRippled {        // one ring per stroke, not per cell
+                emitRipple(at: point)
+                strokeRippled = true
+            }
         case .erase:
             withAnimation(.easeOut(duration: 0.12)) {
                 grid.cells[index] = nil
             }
         }
+    }
+
+    /// Glow is expensive (offscreen blur per dot), so it's off while many dots are
+    /// in motion and on at rest — keeps drawing/sending/clearing buttery.
+    private var boardGlow: CGFloat {
+        (isDrawing || isClearing || launchGrid != nil) ? 0 : 1
     }
 
     /// ripple — a quick feedback ring at the painted point, auto-removed.
