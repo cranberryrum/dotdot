@@ -38,13 +38,14 @@ struct DotGridWidgetView: View {
                     .padding(8)
             }
             if drawing == nil {
-                Text("Dots & photos from\nfriends show up here")
-                    .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                Text("DOTS & PHOTOS FROM\nFRIENDS SHOW UP HERE")
+                    .font(DotFont.mono(11, bold: true))
+                    .tracking(1)
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(.white.opacity(0.4))
             }
         }
-        .containerBackground(for: .widget) { Palette.boardBackground }
+        .containerBackground(for: .widget) { Theme.panel }
     }
 
     @ViewBuilder
@@ -62,10 +63,13 @@ struct DotGridWidgetView: View {
                     photoPlaceholder   // never blank or crash
                 }
             case .dots:
-                GridBoardView(grid: drawing.grid ?? .empty, spacing: 5)
+                // Glow dialed back (it blooms heavier at true widget size) + the
+                // idle "throb" breath, which is widget-only.
+                GridBoardView(grid: drawing.grid ?? .empty, spacing: 5, glowStrength: 0.55)
+                    .throb()
             }
         } else {
-            GridBoardView(grid: .empty, spacing: 5)
+            GridBoardView(grid: .empty, spacing: 5, glowStrength: 0)
         }
     }
 

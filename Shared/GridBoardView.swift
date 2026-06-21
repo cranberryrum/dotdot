@@ -123,8 +123,8 @@ struct CellChipView: View {
         reduceMotion
             ? .opacity
             : .asymmetric(
-                insertion: .scale(scale: 0.5).combined(with: .opacity),
-                removal: .scale(scale: 0.85).combined(with: .opacity)
+                insertion: .scale(scale: 0.35).combined(with: .opacity),  // dotpop start
+                removal: .scale(scale: 0.2).combined(with: .opacity)       // dotpoof
             )
     }
 }

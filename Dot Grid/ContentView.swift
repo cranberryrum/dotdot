@@ -29,6 +29,8 @@ struct ContentView: View {
     @State private var fallWorkTask: Task<Void, Never>?
 
     @State private var liftTrigger = 0
+    @State private var ripples: [RippleEvent] = []
+    @State private var launchGrid: Grid?
 
     @State private var showStampTray = false
     @State private var stampWorkTask: Task<Void, Never>?
@@ -95,6 +97,11 @@ struct ContentView: View {
                 fallDistance: boardSide + 60,
                 liftTrigger: liftTrigger
             )
+            .overlay {
+                ForEach(ripples) { ripple in
+                    RippleRing(color: ripple.color).position(ripple.center)
+                }
+            }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -114,12 +121,17 @@ struct ContentView: View {
                 .fill(Palette.boardBackground)
         )
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            if let launchGrid {
+                LaunchCopy(grid: launchGrid, spacing: boardSpacing) { self.launchGrid = nil }
+            }
+        }
     }
 
-    /// The spring used to place a chip. Shared by drawing and stamp fill so the
-    /// stamp cascades on exactly like the user drew it.
+    /// The spec's `dotpop` (scale .35 → 1.22 → 1). Shared by drawing and stamp
+    /// fill so the stamp cascades on exactly like the user drew it (`drawin`).
     private var placementAnimation: Animation {
-        reduceMotion ? .easeOut(duration: 0.1) : .spring(response: 0.18, dampingFraction: 0.6)
+        Motion.place(reduceMotion: reduceMotion)
     }
 
     private func paint(at point: CGPoint, boardSide: CGFloat) {
@@ -144,10 +156,22 @@ struct ContentView: View {
             }
             paintHaptic.impactOccurred()
             paintHaptic.prepare()
+            emitRipple(at: point)
         case .erase:
             withAnimation(.easeOut(duration: 0.12)) {
                 grid.cells[index] = nil
             }
+        }
+    }
+
+    /// ripple — a quick feedback ring at the painted point, auto-removed.
+    private func emitRipple(at point: CGPoint) {
+        guard !reduceMotion else { return }
+        let event = RippleEvent(center: point, color: Palette.color(at: selectedColorIndex))
+        ripples.append(event)
+        Task {
+            try? await Task.sleep(for: .seconds(0.55))
+            ripples.removeAll { $0.id == event.id }
         }
     }
 
@@ -457,7 +481,10 @@ struct ContentView: View {
         sendHaptic.impactOccurred()
         sendHaptic.prepare()
 
-        liftTrigger += 1   // the dots hop up and land, acknowledging the send
+        // launchUp: a flying copy shrinks away while the real board stays put.
+        if !reduceMotion, !grid.isEmpty {
+            launchGrid = grid
+        }
 
         let morph: Animation = reduceMotion
             ? .easeInOut(duration: 0.25)

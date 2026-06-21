@@ -93,3 +93,23 @@ enum Motion {
 
     static func place(reduceMotion: Bool) -> Animation { reduceMotion ? reduced : dotpop }
 }
+
+/// throb — the living-pixel idle breath (scale 1 → 1.045, loop). WIDGET ONLY;
+/// it competes with drawing on the composer, so never use it there.
+struct Throb: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var on = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(on ? 1.045 : 1.0)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true)) { on = true }
+            }
+    }
+}
+
+extension View {
+    func throb() -> some View { modifier(Throb()) }
+}
