@@ -54,6 +54,7 @@ struct AddFriendView: View {
         }
         .background(Palette.screenBackground.ignoresSafeArea())
         .font(DotFont.ui(17))
+        .textCase(.lowercase)
         .preferredColorScheme(.dark)
     }
 

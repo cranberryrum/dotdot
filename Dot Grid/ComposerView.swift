@@ -39,6 +39,7 @@ struct ComposerView: View {
             .padding(20)
         }
         .font(DotFont.ui(17))   // Hanken Grotesk is the default UI/body font
+        .textCase(.lowercase)   // the whole app reads lowercase
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showAddFriend) { AddFriendView() }
         .sheet(isPresented: $showDebug) { DebugView() }

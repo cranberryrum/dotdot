@@ -38,7 +38,7 @@ struct DotGridWidgetView: View {
                     .padding(8)
             }
             if drawing == nil {
-                Text("DOTS & PHOTOS FROM\nFRIENDS SHOW UP HERE")
+                Text("dots & photos from\nfriends show up here")
                     .font(DotFont.mono(11, bold: true))
                     .tracking(1)
                     .multilineTextAlignment(.center)
@@ -105,8 +105,8 @@ struct DotGridWidget: Widget {
         StaticConfiguration(kind: GridStore.widgetKind, provider: LatestProvider()) { entry in
             DotGridWidgetView(drawing: entry.drawing)
         }
-        .configurationDisplayName("Dot Grid")
-        .description("The latest drawing from a friend.")
+        .configurationDisplayName("dotdot")
+        .description("the latest drawing from a friend.")
         .supportedFamilies([.systemLarge])
     }
 }
@@ -142,8 +142,8 @@ struct FriendQuery: EntityQuery {
 }
 
 struct SelectFriendIntent: WidgetConfigurationIntent {
-    static var title: LocalizedStringResource { "Pick a Friend" }
-    static var description: IntentDescription { "Show one friend's latest drawing." }
+    static var title: LocalizedStringResource { "pick a friend" }
+    static var description: IntentDescription { "show one friend's latest drawing." }
 
     @Parameter(title: "Friend") var friend: FriendEntity?
 }
@@ -172,8 +172,8 @@ struct DotGridFriendWidget: Widget {
         AppIntentConfiguration(kind: GridStore.friendWidgetKind, intent: SelectFriendIntent.self, provider: FriendProvider()) { entry in
             DotGridWidgetView(drawing: entry.drawing)
         }
-        .configurationDisplayName("Friend's Dot Grid")
-        .description("Pin one friend's latest drawing.")
+        .configurationDisplayName("friend's dotdot")
+        .description("pin one friend's latest drawing.")
         .supportedFamilies([.systemLarge])
     }
 }

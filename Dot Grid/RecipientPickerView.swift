@@ -26,11 +26,11 @@ struct RecipientPickerView: View {
                 }
             }
             .background(Palette.screenBackground.ignoresSafeArea())
-            .navigationTitle("Send to")
+            .navigationTitle("send to")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
+                    Button("cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showAddFriend = true } label: { Image(systemName: "person.badge.plus") }
@@ -39,6 +39,7 @@ struct RecipientPickerView: View {
             .safeAreaInset(edge: .bottom) { sendBar }
         }
         .font(DotFont.ui(17))
+        .textCase(.lowercase)
         .preferredColorScheme(.dark)
         .onAppear {
             let valid = Set(appModel.friends.map(\.id))

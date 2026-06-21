@@ -38,6 +38,7 @@ struct OnboardingView: View {
             .ignoresSafeArea()
         }
         .font(DotFont.ui(17))
+        .textCase(.lowercase)
         .preferredColorScheme(.dark)
     }
 
@@ -69,7 +70,7 @@ struct OnboardingView: View {
                     .foregroundStyle(.white.opacity(0.5))
             }
 
-            TextField("", text: $name, prompt: Text("Your name").foregroundStyle(.white.opacity(0.4)))
+            TextField("", text: $name, prompt: Text("your name").foregroundStyle(.white.opacity(0.4)))
                 .textInputAutocapitalization(.words)
                 .font(DotFont.ui(20, weight: .semibold))
                 .multilineTextAlignment(.center)

@@ -51,15 +51,15 @@ struct PhotoComposerView: View {
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
         }
-        .alert("Camera access is off", isPresented: $showCameraDenied) {
-            Button("Open Settings") {
+        .alert("camera access is off", isPresented: $showCameraDenied) {
+            Button("open settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
                     UIApplication.shared.open(url)
                 }
             }
-            Button("Use gallery", role: .cancel) { showGallery = true }
+            Button("use gallery", role: .cancel) { showGallery = true }
         } message: {
-            Text("Enable Camera in Settings to take a photo, or pick one from your gallery.")
+            Text("enable camera in settings to take a photo, or pick one from your gallery.")
         }
         .onAppear { sendHaptic.prepare() }
     }
