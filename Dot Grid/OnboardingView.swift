@@ -58,7 +58,6 @@ struct OnboardingView: View {
             wordmark
 
             TokenBadge(token: token, size: 92)
-                .neonGlow(token.color, tight: 6, soft: 22)
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: token)
 
             VStack(spacing: 6) {
@@ -179,7 +178,6 @@ struct OnboardingView: View {
             .background(
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(token.color)
-                    .neonGlow(token.color, tight: 6, soft: 18)
             )
     }
 }

@@ -66,25 +66,6 @@ extension Text {
     }
 }
 
-// MARK: - Neon glow (the signature lit-dot bloom)
-
-extension View {
-    /// Two stacked colored shadows — a tight bright one and a wider soft one.
-    /// When `enabled` is false we apply NO shadow at all (a `.clear` shadow still
-    /// costs an offscreen blur pass), so motion stays smooth: callers turn the glow
-    /// off while many dots animate, on at rest.
-    @ViewBuilder
-    func neonGlow(_ color: Color, tight: CGFloat = 4, soft: CGFloat = 12, enabled: Bool = true) -> some View {
-        if enabled {
-            self
-                .shadow(color: color.opacity(0.85), radius: tight)
-                .shadow(color: color.opacity(0.55), radius: soft)
-        } else {
-            self
-        }
-    }
-}
-
 // MARK: - Motion (curves from the spec's table)
 
 enum Motion {

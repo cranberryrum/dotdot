@@ -63,13 +63,12 @@ struct DotGridWidgetView: View {
                     photoPlaceholder   // never blank or crash
                 }
             case .dots:
-                // Glow dialed back (it blooms heavier at true widget size) + the
-                // idle "throb" breath, which is widget-only.
-                GridBoardView(grid: drawing.grid ?? .empty, spacing: 5, glowStrength: 0.55)
+                // Idle "throb" breath, which is widget-only.
+                GridBoardView(grid: drawing.grid ?? .empty, spacing: 5)
                     .throb()
             }
         } else {
-            GridBoardView(grid: .empty, spacing: 5, glowStrength: 0)
+            GridBoardView(grid: .empty, spacing: 5)
         }
     }
 

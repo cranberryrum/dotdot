@@ -188,7 +188,6 @@ struct PhotoComposerView: View {
             .background(
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(Theme.blue)
-                    .neonGlow(Theme.blue, tight: 6, soft: 18, enabled: image != nil)
             )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
             .opacity(image == nil ? 0.5 : 1)

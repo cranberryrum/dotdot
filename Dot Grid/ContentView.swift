@@ -31,7 +31,6 @@ struct ContentView: View {
     @State private var liftTrigger = 0
     @State private var ripples: [RippleEvent] = []
     @State private var launchGrid: Grid?
-    @State private var isDrawing = false
     @State private var strokeRippled = false
 
     @State private var showStampTray = false
@@ -97,8 +96,7 @@ struct ContentView: View {
                 spacing: boardSpacing,
                 fallTrigger: fallTrigger,
                 fallDistance: boardSide + 60,
-                liftTrigger: liftTrigger,
-                glowStrength: boardGlow
+                liftTrigger: liftTrigger
             )
             .overlay {
                 ForEach(ripples) { ripple in
@@ -109,13 +107,11 @@ struct ContentView: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
-                        if !isDrawing { isDrawing = true }
                         paint(at: value.location, boardSide: boardSide)
                     }
                     .onEnded { _ in
                         dragMode = nil
                         visitedCells.removeAll()
-                        isDrawing = false
                         strokeRippled = false
                     }
             )
@@ -171,12 +167,6 @@ struct ContentView: View {
                 grid.cells[index] = nil
             }
         }
-    }
-
-    /// Glow is expensive (offscreen blur per dot), so it's off while many dots are
-    /// in motion and on at rest — keeps drawing/sending/clearing buttery.
-    private var boardGlow: CGFloat {
-        (isDrawing || isClearing || launchGrid != nil) ? 0 : 1
     }
 
     /// ripple — a quick feedback ring at the painted point, auto-removed.
@@ -534,7 +524,6 @@ struct ContentView: View {
             .background(
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .fill(Palette.color(at: selectedColorIndex))
-                    .neonGlow(Palette.color(at: selectedColorIndex), tight: 6, soft: 18)
             )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
         }

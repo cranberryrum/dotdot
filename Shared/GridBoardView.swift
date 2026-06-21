@@ -29,9 +29,6 @@ struct GridBoardView: View {
     var fallTrigger: Int = 0
     var fallDistance: CGFloat = 0   // 0 → no falling (widget / static render)
     var liftTrigger: Int = 0
-    /// Scales the lit-dot neon glow. 1 in the app; the widget dials it back so the
-    /// bloom doesn't muddy at true widget size.
-    var glowStrength: CGFloat = 1
 
     var body: some View {
         VStack(spacing: spacing) {
@@ -41,8 +38,7 @@ struct GridBoardView: View {
                         CellChipView(
                             cell: grid[row, column],
                             fall: fall(row: row, column: column),
-                            lift: lift(row: row, column: column),
-                            glowStrength: glowStrength
+                            lift: lift(row: row, column: column)
                         )
                     }
                 }
@@ -73,7 +69,6 @@ struct CellChipView: View {
     let cell: Cell?
     var fall: ChipFall? = nil
     var lift: ChipLift? = nil
-    var glowStrength: CGFloat = 1
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -98,16 +93,9 @@ struct CellChipView: View {
     @ViewBuilder
     private func chip(cell: Cell, side: CGFloat) -> some View {
         let chipSide = side * cell.size.scale
-        let accent = Palette.color(at: cell.colorIndex)
         let shape = RoundedRectangle(cornerRadius: chipSide * 0.4, style: .continuous)
-            .fill(accent)
+            .fill(Palette.color(at: cell.colorIndex))
             .frame(width: chipSide, height: chipSide)
-            .neonGlow(
-                accent,
-                tight: chipSide * 0.16 * glowStrength,
-                soft: chipSide * 0.46 * glowStrength,
-                enabled: glowStrength > 0
-            )
             .transition(chipTransition)
 
         if reduceMotion {
