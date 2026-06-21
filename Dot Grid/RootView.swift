@@ -29,7 +29,6 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await appModel.onForeground() } }
         }
-        .onOpenURL { appModel.handleInviteURL($0) }
         .overlay(alignment: .top) { bannerOverlay }
     }
 

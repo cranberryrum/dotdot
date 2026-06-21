@@ -14,9 +14,9 @@ Automatic signing will register these on the App ID the first time you add them:
 - **App Groups** → `group.com.kolteaditya.dotgrid` (already present)
 
 The entitlements file (`Dot Grid/DotGrid.entitlements`) and `Info.plist`
-(`UIBackgroundModes`, `dotdot` URL scheme) are already wired; adding the
-capabilities in Xcode just makes the provisioning profile match. The widget target
-only needs the App Group (no CloudKit/push).
+(`UIBackgroundModes`) are already wired; adding the capabilities in Xcode just
+makes the provisioning profile match. The widget target only needs the App Group
+(no CloudKit/push).
 
 > `aps-environment` is set to `development`. Xcode flips this for TestFlight/App
 > Store automatically; if you build Release for distribution, confirm it's
@@ -29,17 +29,20 @@ indexes by hand (CloudKit doesn't infer them). In the Dashboard → Schema → I
 
 | Record type | Field         | Index                |
 |-------------|---------------|----------------------|
-| Profile     | inviteToken   | Queryable            |
 | Friendship  | members       | Queryable            |
 | InviteCode  | code          | Queryable            |
 | Drawing     | recipientID   | Queryable            |
+| Drawing     | senderID      | Queryable            |
 | Drawing     | sentAt        | Queryable + Sortable |
 | Drawing     | recordName    | Queryable (default)  |
+
+> `senderID` needs a Queryable index now too — "delete my data" queries drawings
+> by sender to remove the ones you sent.
 
 Fields per type (auto-created on first write; types shown for reference):
 
 - **Profile** — recordName = the user's CloudKit user-record name. `name` (String),
-  `tokenSymbol` (String), `tokenColor` (Int64), `inviteToken` (String).
+  `tokenSymbol` (String), `tokenColor` (Int64).
 - **Friendship** — recordName = `pair_<idA>__<idB>` (sorted, so it's idempotent).
   `members` (List<String>), `userA`, `userB`.
 - **InviteCode** — `code` (String), `ownerID` (String), `expiresAt` (Date/Time),
@@ -62,14 +65,11 @@ The push subscription (`CKQuerySubscription` on `Drawing` where
 > Tip: run each app flow once in development so the record types appear, then add
 > the indexes, then re-run. Deploy the schema to Production before shipping.
 
-## 3. Invite links (optional, out of MVP scope)
+## 3. Pairing is code-only
 
-The shareable link is `https://dotdot.app/i/<inviteToken>`. For a tapped link to
-*open the app* (and hit the App Store when not installed) you need a real domain
-with an `apple-app-site-association` file and the Associated Domains capability —
-deliberately out of scope here. **The 6-digit code path works today** and is the
-reliable way to pair while testing. The app already parses both the `https` link
-and the `dotdot://invite?t=<token>` custom scheme via `AppModel.inviteToken(from:)`.
+Pairing is by 6-digit single-use code only — there is no invite link or
+`dotdot.app` domain. Generate your code in Settings (or Add a friend), copy it,
+and send it however you like; the other person types it in Add a friend.
 
 ## 4. What's verified vs. what needs two devices
 
@@ -78,7 +78,7 @@ and the `dotdot://invite?t=<token>` custom scheme via `AppModel.inviteToken(from
 - ✅ Local App Group → widget pipe (drawing is written to the shared container the
   widget reads).
 - ⏳ Needs two devices + two iCloud accounts + the schema above: onboarding,
-  code/link pairing, send → friend's widget with the sender's token. This is the
+  code pairing, send → friend's widget with the sender's token. This is the
   spec's "DONE WHEN" and can only be confirmed on hardware.
 
 ## 5. Architecture (where to look)
@@ -90,7 +90,7 @@ and the `dotdot://invite?t=<token>` custom scheme via `AppModel.inviteToken(from
 - `Dot Grid/SharingService.swift` — all CloudKit (identity, profile, pairing, send,
   fetch, subscription) with the edge-case handling.
 - `Dot Grid/AppModel.swift` — orchestration: iCloud state, account-switch, friends,
-  local-first send + offline queue, push/foreground refresh, invite handling.
+  local-first send + offline queue, push/foreground refresh.
 - `Dot Grid/RootView.swift` / `OnboardingView` / `AddFriendView` /
   `RecipientPickerView` — the UI.
 - `Dot Grid/AppDelegate.swift` — remote-notification registration + push handling.

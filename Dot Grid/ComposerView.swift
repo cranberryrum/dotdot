@@ -17,6 +17,7 @@ struct ComposerView: View {
     @AppStorage("composeMode") private var modeRaw = ComposeMode.dots.rawValue
     @State private var showAddFriend = false
     @State private var showDebug = false
+    @State private var showSettings = false
     @Namespace private var modePill
 
     private var mode: ComposeMode { ComposeMode(rawValue: modeRaw) ?? .dots }
@@ -43,6 +44,7 @@ struct ComposerView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showAddFriend) { AddFriendView() }
         .sheet(isPresented: $showDebug) { DebugView() }
+        .sheet(isPresented: $showSettings) { SettingsView() }
     }
 
     // MARK: Top bar (shared across modes)
@@ -62,6 +64,7 @@ struct ComposerView: View {
                 }
                 if let me = appModel.profile {
                     TokenBadge(token: me.token, size: 32)
+                        .onTapGesture { showSettings = true }
                         .onLongPressGesture { showDebug = true }
                 }
                 Button { showAddFriend = true } label: {

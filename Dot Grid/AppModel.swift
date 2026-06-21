@@ -58,9 +58,6 @@ final class AppModel {
         await bootstrap()
     }
 
-    /// An invite link tapped before onboarding finished; applied afterwards.
-    private var pendingInviteToken: String?
-
     private(set) var lastRecipientIDs: [String]
 
     private let service = SharingService.shared
@@ -123,7 +120,6 @@ final class AppModel {
         await refreshFriends()
         await pullIncoming()
         await flushOutbox()
-        if let token = pendingInviteToken { await applyInvite(token: token) }
     }
 
     /// Lighter refresh when the app returns to the foreground.
@@ -157,21 +153,49 @@ final class AppModel {
 
     // MARK: - Onboarding
 
-    /// Step 1 of onboarding: create the profile (and apply any held invite). Stays
-    /// on the onboarding flow so step 2 (add a friend) can show the user's link.
+    /// Step 1 of onboarding: create the profile. Stays on the onboarding flow so
+    /// step 2 (add a friend) can run before landing in the composer.
     func createProfile(name: String, token: IdentityToken) async throws {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
         let saved = try await service.saveMyProfile(userID: userID, name: name, token: token, existing: profile)
         profile = saved
         GridStore.shared.saveProfile(saved)
         await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
-        if let token = pendingInviteToken { await applyInvite(token: token) }
         await refreshFriends()
         await pullIncoming()
     }
 
+    /// Update the profile from the Settings screen (reuses the same save path).
+    func updateProfile(name: String, token: IdentityToken) async throws {
+        guard case .available = account else { throw PairingError.notSignedIn }
+        try await createProfile(name: name, token: token)
+    }
+
     /// Step 2 done (added a friend or skipped) → land in the composer.
     func markReady() { phase = .ready }
+
+    // MARK: - Delete my data
+
+    /// Remove the user's CloudKit footprint (profile, friendships, sent drawings,
+    /// subscriptions), wipe local state to a fresh install, and return to onboarding.
+    /// Drawings already delivered to a friend's device may still exist there.
+    func deleteAllMyData() async {
+        guard case let .available(userID) = account else { return }
+        await service.deleteMyData(userID: userID, participantID: participantID(for: userID))
+
+        GridStore.shared.clearSharedState()
+        let defaults = UserDefaults.standard
+        for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients", "dotdotDeviceID"] {
+            defaults.removeObject(forKey: key)
+        }
+        profile = nil
+        friends = []
+        outbox = []
+        lastRecipientIDs = []
+        lastError = nil
+        WidgetCenter.shared.reloadAllTimelines()
+        phase = .onboarding
+    }
 
     // MARK: - Pairing
 
@@ -180,36 +204,10 @@ final class AppModel {
         return try await service.generateCode(ownerID: userID, ownerParticipantID: participantID(for: userID))
     }
 
-    func inviteLink() -> URL? {
-        profile.map { service.inviteLink(for: $0) }
-    }
-
     func addFriend(byCode code: String) async throws {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
         try await service.redeemCode(code, myID: userID, myParticipantID: participantID(for: userID))
         await refreshFriends()
-    }
-
-    func handleInviteURL(_ url: URL) {
-        guard let token = Self.inviteToken(from: url) else { return }
-        Task {
-            if profile != nil { await applyInvite(token: token) }
-            else { pendingInviteToken = token }   // hold until onboarding completes
-        }
-    }
-
-    private func applyInvite(token: String) async {
-        guard case let .available(userID) = account else { pendingInviteToken = token; return }
-        pendingInviteToken = nil
-        do {
-            try await service.redeemInvite(token: token, myID: userID)
-            await refreshFriends()
-            banner = "You're connected! 🎉"
-        } catch let error as PairingError {
-            banner = error.errorDescription
-        } catch {
-            banner = PairingError.generic.errorDescription
-        }
     }
 
     private func refreshFriends() async {
@@ -326,19 +324,5 @@ final class AppModel {
             }
         }
         monitor.start(queue: DispatchQueue(label: "dotdot.network"))
-    }
-
-    /// Parse the invite token from either the universal link or the custom scheme.
-    static func inviteToken(from url: URL) -> String? {
-        // https://dotdot.app/i/<token>
-        if url.host == "dotdot.app", url.pathComponents.count >= 3, url.pathComponents[1] == "i" {
-            return url.pathComponents[2]
-        }
-        // dotdot://invite?t=<token>
-        if url.scheme == "dotdot" {
-            let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            return comps?.queryItems?.first(where: { $0.name == "t" })?.value
-        }
-        return nil
     }
 }

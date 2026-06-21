@@ -28,8 +28,6 @@ struct Profile: Codable, Equatable {
     var id: String
     var name: String
     var token: IdentityToken
-    /// Long random token embedded in the user's shareable invite link.
-    var inviteToken: String
 }
 
 /// A paired friend, cached locally so the widget's friend picker works offline.

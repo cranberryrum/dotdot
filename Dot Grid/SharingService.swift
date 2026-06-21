@@ -8,8 +8,7 @@
 //
 //  Required CloudKit Dashboard schema (development env auto-creates record types
 //  on first save, but you MUST add these indexes by hand):
-//    • Profile     recordName=<userID>   fields: name, tokenSymbol, tokenColor,
-//                  inviteToken (QUERYABLE)
+//    • Profile     recordName=<userID>   fields: name, tokenSymbol, tokenColor
 //    • Friendship  recordName="pair_<a>__<b>"  fields: members [String] (QUERYABLE)
 //    • InviteCode  fields: code (QUERYABLE), ownerID, expiresAt, used
 //    • Drawing     fields: recipientID (QUERYABLE), sentAt (SORTABLE/QUERYABLE),
@@ -139,10 +138,8 @@ final class SharingService {
         record["name"] = name as CKRecordValue
         record["tokenSymbol"] = token.symbol as CKRecordValue
         record["tokenColor"] = token.colorIndex as CKRecordValue
-        let inviteToken = existing?.inviteToken ?? (record["inviteToken"] as? String) ?? Self.randomToken(length: 22)
-        record["inviteToken"] = inviteToken as CKRecordValue
         let saved = try await db.save(record)
-        return profile(from: saved) ?? Profile(id: userID, name: name, token: token, inviteToken: inviteToken)
+        return profile(from: saved) ?? Profile(id: userID, name: name, token: token)
     }
 
     // MARK: - Pairing
@@ -158,11 +155,6 @@ final class SharingService {
         record["used"] = 0 as CKRecordValue
         try await db.save(record)
         return code
-    }
-
-    /// The shareable invite link for this user.
-    func inviteLink(for profile: Profile) -> URL {
-        URL(string: "https://dotdot.app/i/\(profile.inviteToken)")!
     }
 
     /// Redeem a typed 6-digit code. Throws a `PairingError` on every failure path.
@@ -198,23 +190,6 @@ final class SharingService {
         record["usedBy"] = myParticipantID as CKRecordValue
         record["usedByUserID"] = myID as CKRecordValue
         _ = try? await db.save(record)
-    }
-
-    /// Redeem an invite link's token.
-    func redeemInvite(token: String, myID: String) async throws {
-        let predicate = NSPredicate(format: "inviteToken == %@", token)
-        let query = CKQuery(recordType: RT.profile, predicate: predicate)
-        let owner: CKRecord?
-        do {
-            let (results, _) = try await db.records(matching: query, resultsLimit: 2)
-            owner = results.compactMap { try? $0.1.get() }.first
-        } catch {
-            throw PairingError.generic
-        }
-        guard let owner else { throw PairingError.codeNotFound }
-        let ownerID = owner.recordID.recordName
-        if ownerID == myID { throw PairingError.ownCode }
-        try await createFriendship(myID: myID, otherID: ownerID)
     }
 
     /// Create the single friendship record for a pair. Idempotent: the recordName
@@ -267,6 +242,41 @@ final class SharingService {
             }
         }
         return friends.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    // MARK: - Delete my data
+
+    /// Best-effort removal of the user's own CloudKit footprint: their profile,
+    /// friendships involving them, the drawings they sent, and their push
+    /// subscriptions. Drawings already delivered to a friend's device live in that
+    /// device's App Group and can't be reached from here.
+    func deleteMyData(userID: String, participantID: String) async {
+        let ids = Set([participantID, userID])
+
+        // Friendships involving me.
+        for id in ids {
+            let query = CKQuery(recordType: RT.friendship, predicate: NSPredicate(format: "members CONTAINS %@", id))
+            if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
+                for recordID in results.map(\.0) { _ = try? await db.deleteRecord(withID: recordID) }
+            }
+        }
+
+        // Drawings I sent.
+        for id in ids {
+            let query = CKQuery(recordType: RT.drawing, predicate: NSPredicate(format: "senderID == %@", id))
+            if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
+                for recordID in results.map(\.0) { _ = try? await db.deleteRecord(withID: recordID) }
+            }
+        }
+
+        // My profile.
+        _ = try? await db.deleteRecord(withID: CKRecord.ID(recordName: userID))
+
+        // My push subscriptions (so this device stops receiving).
+        for id in ids {
+            _ = try? await db.deleteSubscription(withID: "drawings-to-\(subscriptionIDComponent(id))")
+            _ = try? await db.deleteSubscription(withID: "friendships-of-\(subscriptionIDComponent(id))")
+        }
     }
 
     // MARK: - Sending
@@ -411,8 +421,7 @@ final class SharingService {
         return Profile(
             id: record.recordID.recordName,
             name: name,
-            token: token,
-            inviteToken: record["inviteToken"] as? String ?? ""
+            token: token
         )
     }
 
@@ -452,11 +461,6 @@ final class SharingService {
             }
         }
         return false
-    }
-
-    static func randomToken(length: Int) -> String {
-        let chars = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-        return String((0..<length).map { _ in chars[Int.random(in: 0..<chars.count)] })
     }
 }
 

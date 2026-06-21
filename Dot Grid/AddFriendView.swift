@@ -2,10 +2,12 @@
 //  AddFriendView.swift
 //  Dot Grid
 //
-//  Two ways in, no approval: type a friend's one-time code, or share your link.
+//  Pairing is code-only, no approval: type a friend's one-time code, or share
+//  your own copyable code. No links.
 //
 
 import SwiftUI
+import UIKit
 
 struct AddFriendView: View {
     @Environment(AppModel.self) private var appModel
@@ -21,6 +23,8 @@ struct AddFriendView: View {
 
     @State private var myCode: String?
     @State private var generating = false
+    @State private var copied = false
+    @State private var copiedResetTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
@@ -117,18 +121,32 @@ struct AddFriendView: View {
         connecting = false
     }
 
-    // MARK: Share your invite
+    // MARK: Your code
 
     private var shareCard: some View {
         card {
-            Text("SHARE YOUR INVITE")
+            Text("Your code")
                 .font(DotFont.heavy(15)).foregroundStyle(.white)
+            Text("Share this with a friend so they can add you.")
+                .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))
 
             if let myCode {
-                Text(myCode)
-                    .font(DotFont.mono(40, bold: true))
-                    .tracking(8)
-                    .foregroundStyle(Theme.lime)
+                HStack(spacing: 12) {
+                    Text(myCode)
+                        .font(DotFont.mono(38, bold: true))
+                        .tracking(6)
+                        .foregroundStyle(Theme.lime)
+                    Spacer()
+                    Button { copy(myCode) } label: {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc.fill")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.black.opacity(0.85))
+                            .frame(width: 48, height: 48)
+                            .background(Circle().fill(.white))
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(SquishyButtonStyle())
+                }
                 Text("Single-use · expires in 10 minutes")
                     .font(DotFont.mono(11)).foregroundStyle(.white.opacity(0.5))
             }
@@ -136,32 +154,31 @@ struct AddFriendView: View {
             Button {
                 Task { await makeCode() }
             } label: {
-                Text(generating ? "Generating…" : (myCode == nil ? "Get a one-time code" : "Get a new code"))
-                    .font(.subheadline.weight(.bold))
+                Text(generating ? "Generating…" : (myCode == nil ? "Get a code" : "Get a new code"))
+                    .font(DotFont.ui(15, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity).frame(height: 46)
                     .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.08)))
             }
             .buttonStyle(SquishyButtonStyle())
             .disabled(generating)
+        }
+    }
 
-            if let link = appModel.inviteLink() {
-                ShareLink(item: link) {
-                    HStack {
-                        Image(systemName: "link")
-                        Text("Share invite link")
-                    }
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity).frame(height: 46)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.08)))
-                }
-            }
+    private func copy(_ code: String) {
+        UIPasteboard.general.string = code
+        withAnimation { copied = true }
+        copiedResetTask?.cancel()
+        copiedResetTask = Task {
+            try? await Task.sleep(for: .seconds(1.6))
+            guard !Task.isCancelled else { return }
+            withAnimation { copied = false }
         }
     }
 
     private func makeCode() async {
         generating = true
+        copied = false
         do { myCode = try await appModel.generateCode() }
         catch { withAnimation { resultText = (error as? PairingError)?.errorDescription ?? "Couldn't make a code."; resultIsError = true } }
         generating = false

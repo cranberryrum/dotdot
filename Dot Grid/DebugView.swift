@@ -26,7 +26,6 @@ struct DebugView: View {
                     if let p = appModel.profile {
                         row("Name", p.name)
                         row("Token", "\(p.token.symbol)  ·  color \(p.token.colorIndex)")
-                        row("Invite token", p.inviteToken)
                     } else {
                         row("Profile", "none (not onboarded / signed out)")
                     }
