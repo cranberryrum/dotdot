@@ -15,6 +15,7 @@ struct ComposerView: View {
     @Environment(AppModel.self) private var appModel
 
     @AppStorage("composeMode") private var modeRaw = ComposeMode.dots.rawValue
+    @AppStorage("accentColorIndex") private var accentIndex = 0   // drives the wordmark tint
     @State private var showAddFriend = false
     @State private var showDebug = false
     @State private var showSettings = false
@@ -82,13 +83,18 @@ struct ComposerView: View {
         }
     }
 
-    /// The DOTDOT wordmark in Bagel Fat One, two playful colors.
+    /// The DOTDOT wordmark — Hanken Grotesk italic, a heavier "dot" + a featherweight
+    /// "dot" (medium + extralight, tracking pulled in tight, per the Figma spec). Tinted
+    /// with whatever dot color is currently selected: a tiny easter egg, the logo follows
+    /// your picker.
     private var wordmark: some View {
-        HStack(spacing: 0) {
-            Text("dot").foregroundStyle(Theme.blue)
-            Text("dot").foregroundStyle(Theme.pink)
-        }
-        .font(DotFont.bubble(30))
+        (
+            Text("dot").font(.custom("HankenGrotesk-MediumItalic", fixedSize: 32))
+            + Text("dot").font(.custom("HankenGrotesk-ExtraLightItalic", fixedSize: 32))
+        )
+        .tracking(-2.56)
+        .foregroundStyle(Palette.color(at: accentIndex))
+        .animation(.easeInOut(duration: 0.2), value: accentIndex)
     }
 
     private var iCloudBanner: some View {

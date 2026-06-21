@@ -11,7 +11,9 @@ import WidgetKit
 
 struct ContentView: View {
     @State private var grid: Grid = GridStore.shared.load()
-    @State private var selectedColorIndex = 0
+    // Shared with the wordmark in ComposerView via UserDefaults — pick a color, the
+    // logo follows. Persists the last-picked accent across launches too.
+    @AppStorage("accentColorIndex") private var selectedColorIndex = 0
     @State private var selectedSize: ChipSize = .medium
 
     @State private var dragMode: DragMode?

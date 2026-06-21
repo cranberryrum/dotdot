@@ -11,6 +11,8 @@
 		<string>HankenGrotesk-VariableFont_wght.ttf</string>
 		<string>SpaceMono-Regular.ttf</string>
 		<string>SpaceMono-Bold.ttf</string>
+		<string>HankenGrotesk-MediumItalic.ttf</string>
+		<string>HankenGrotesk-ExtraLightItalic.ttf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
