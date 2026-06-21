@@ -30,9 +30,8 @@ struct SettingsView: View {
 
     private let symbols = ["★", "♥", "✦", "☺", "✿", "✚", "◆", "▲", "♪", "✺", "☀", "☆"]
 
-    // ⬇️ PLACEHOLDERS — replace these with your real values.
-    private let privacyPolicyURL = URL(string: "https://example.com/dotdot/privacy")!  // TODO: hosted privacy policy URL
-    private let supportEmail = "support@example.com"                                   // TODO: your support email
+    private let privacyPolicyURL = URL(string: "https://github.com/cranberryrum/dotdot/blob/main/PRIVACY.md")!
+    private let supportEmail = "adityakoltedes@gmail.com"
 
     init() {
         let p = AppModel.shared.profile
@@ -296,13 +295,14 @@ struct PrivacyPolicyView: View {
                 Text("privacy policy")
                     .font(DotFont.heavy(22)).foregroundStyle(.white)
 
-                // ⬇️ PLACEHOLDER policy text — replace with your real policy.
                 Text("""
-                [PLACEHOLDER — replace with your real privacy policy.]
+                no accounts, no logins. your identity is your iCloud account. dotdot does not track you, run ads, or sell your data.
 
-                dotdot stores your name and identity token, the drawings and photos you send, and a per-device identifier, in order to deliver your messages to the friends you pair with. data syncs through Apple's CloudKit using your iCloud account. dotdot does not track you across apps and does not sell your data.
+                what's stored, in Apple's iCloud (CloudKit): your name and identity token, the drawings and photos you send, your friend connections, and an identifier used only to deliver messages to the right device. friends you pair with can see your name, token, and what you send them.
 
-                you can delete your data anytime from settings → delete my data.
+                you can delete your data anytime from settings → delete my data. note: a drawing already delivered to a friend's device may still exist on their device.
+
+                questions: adityakoltedes@gmail.com
                 """)
                 .font(DotFont.ui(15))
                 .foregroundStyle(.white.opacity(0.8))
