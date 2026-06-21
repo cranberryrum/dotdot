@@ -47,7 +47,6 @@ enum Theme {
 // system font automatically if a face fails to load.
 
 enum DotFont {
-    static func bubble(_ size: CGFloat) -> Font { .custom("BagelFatOne-Regular", fixedSize: size) }
     static func heavy(_ size: CGFloat) -> Font { .custom("ArchivoBlack-Regular", fixedSize: size) }
     static func ui(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .custom("HankenGrotesk-Regular", size: size).weight(weight)

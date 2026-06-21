@@ -23,11 +23,17 @@ struct PhotoComposerView: View {
     @GestureState private var pinch: CGFloat = 1
     @GestureState private var drag: CGSize = .zero
 
-    @State private var showGallery = false
+    // One sheet at a time. Two separate `.sheet` modifiers on the same view
+    // corrupt SwiftUI's presentation state when the PHPicker dismisses itself,
+    // which left the whole screen unresponsive (you had to kill the app).
+    private enum ActiveSheet: Identifiable {
+        case gallery, recipients
+        var id: Int { hashValue }
+    }
+    @State private var activeSheet: ActiveSheet?
     @State private var showCamera = false
     @State private var showCameraDenied = false
 
-    @State private var showRecipientPicker = false
     @State private var pendingPhoto: Data?
     @State private var justSent = false
     @State private var sendResetTask: Task<Void, Never>?
@@ -42,14 +48,16 @@ struct PhotoComposerView: View {
             Spacer(minLength: 0)
             sendButton
         }
-        .sheet(isPresented: $showGallery) {
-            GalleryPicker { setImage($0) }.ignoresSafeArea()
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .gallery:
+                GalleryPicker { setImage($0) }.ignoresSafeArea()
+            case .recipients:
+                RecipientPickerView { recipients in finalizeSend(to: recipients) }
+            }
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraPicker { setImage($0) }.ignoresSafeArea()
-        }
-        .sheet(isPresented: $showRecipientPicker) {
-            RecipientPickerView { recipients in finalizeSend(to: recipients) }
         }
         .alert("camera access is off", isPresented: $showCameraDenied) {
             Button("open settings") {
@@ -57,7 +65,7 @@ struct PhotoComposerView: View {
                     UIApplication.shared.open(url)
                 }
             }
-            Button("use gallery", role: .cancel) { showGallery = true }
+            Button("use gallery", role: .cancel) { activeSheet = .gallery }
         } message: {
             Text("enable camera in settings to take a photo, or pick one from your gallery.")
         }
@@ -102,7 +110,7 @@ struct PhotoComposerView: View {
     }
 
     private var emptyPrompt: some View {
-        Button { showGallery = true } label: {
+        Button { activeSheet = .gallery } label: {
             VStack(spacing: 12) {
                 Image(systemName: "photo.on.rectangle.angled")
                     .font(.system(size: 40, weight: .semibold))
@@ -141,7 +149,7 @@ struct PhotoComposerView: View {
 
     private var controls: some View {
         HStack(spacing: 12) {
-            controlButton(title: "Gallery", systemImage: "photo") { showGallery = true }
+            controlButton(title: "Gallery", systemImage: "photo") { activeSheet = .gallery }
             controlButton(title: "Camera", systemImage: "camera") { openCamera() }
         }
     }
@@ -200,7 +208,7 @@ struct PhotoComposerView: View {
         guard let data = renderWidgetJPEG() else { return }
         pendingPhoto = data
         if appModel.isSignedIn && !appModel.friends.isEmpty {
-            showRecipientPicker = true
+            activeSheet = .recipients
         } else {
             finalizeSend(to: [])
         }

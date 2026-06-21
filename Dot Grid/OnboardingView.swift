@@ -43,11 +43,13 @@ struct OnboardingView: View {
     }
 
     private var wordmark: some View {
-        HStack(spacing: 0) {
-            Text("dot").foregroundStyle(Theme.blue)
-            Text("dot").foregroundStyle(Theme.pink)
-        }
-        .font(DotFont.bubble(40))
+        (
+            Text("dot").font(.custom("HankenGrotesk-MediumItalic", fixedSize: 40))
+            + Text("dot").font(.custom("HankenGrotesk-ExtraLightItalic", fixedSize: 40))
+        )
+        .tracking(-3.2)
+        .foregroundStyle(Palette.color(at: colorIndex))
+        .animation(.easeInOut(duration: 0.2), value: colorIndex)
     }
 
     // MARK: Step 1 — name + token
