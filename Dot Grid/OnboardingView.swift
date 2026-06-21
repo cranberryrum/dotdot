@@ -37,6 +37,7 @@ struct OnboardingView: View {
             }
             .ignoresSafeArea()
         }
+        .font(DotFont.ui(17))
         .preferredColorScheme(.dark)
     }
 

@@ -53,7 +53,7 @@ struct AddFriendView: View {
             .padding(20)
         }
         .background(Palette.screenBackground.ignoresSafeArea())
-        .fontDesign(.rounded)
+        .font(DotFont.ui(17))
         .preferredColorScheme(.dark)
     }
 

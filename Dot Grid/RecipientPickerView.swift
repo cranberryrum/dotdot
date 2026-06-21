@@ -38,7 +38,7 @@ struct RecipientPickerView: View {
             }
             .safeAreaInset(edge: .bottom) { sendBar }
         }
-        .fontDesign(.rounded)
+        .font(DotFont.ui(17))
         .preferredColorScheme(.dark)
         .onAppear {
             let valid = Set(appModel.friends.map(\.id))
