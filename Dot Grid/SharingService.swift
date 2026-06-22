@@ -311,7 +311,7 @@ final class SharingService {
         // For photos, stage the (already downscaled) JPEG to a temp file once; each
         // record gets its own CKAsset pointing at it.
         var assetURL: URL?
-        if kind == .photo, let imageData {
+        if kind != .dots, let imageData {   // photo + doodle both ship a JPEG asset
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("jpg")
@@ -378,14 +378,16 @@ final class SharingService {
 
             let drawing: DisplayDrawing
             switch kind {
-            case .photo:
+            case .photo, .doodle:
                 // The asset is already a downscaled, widget-safe JPEG (the sender
                 // shrank it before upload). CloudKit downloads it to a temp file.
                 guard let asset = record["imageAsset"] as? CKAsset,
                       let url = asset.fileURL,
                       let data = try? Data(contentsOf: url)
                 else { continue }
-                drawing = .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
+                drawing = kind == .doodle
+                    ? .doodle(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
+                    : .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
             case .dots:
                 guard let data = record["gridData"] as? Data,
                       let grid = try? JSONDecoder().decode(Grid.self, from: data)

@@ -306,7 +306,7 @@ struct DoodleComposerView: View {
 
     private func finalizeSend(to recipients: [String]) {
         guard let data = pendingPhoto else { return }
-        appModel.send(.photo(data), to: recipients)
+        appModel.send(.doodle(data), to: recipients)
         pendingPhoto = nil
 
         sendHaptic.impactOccurred()

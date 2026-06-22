@@ -68,6 +68,17 @@ struct DotGridWidgetView: View {
                 } else {
                     photoPlaceholder.padding(margins)   // never blank or crash
                 }
+            case .doodle:
+                if let data = drawing.imageData, let ui = UIImage(data: data) {
+                    // Fit (not fill) so a doodle never crops at the edges. Its panel
+                    // background matches the widget's, so the letterbox is invisible.
+                    Image(uiImage: ui)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    photoPlaceholder.padding(margins)
+                }
             case .dots:
                 // Idle "throb" breath, which is widget-only.
                 GridBoardView(grid: drawing.grid ?? .empty, spacing: 5)

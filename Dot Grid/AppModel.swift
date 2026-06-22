@@ -244,6 +244,7 @@ final class AppModel {
     enum ComposePayload {
         case dots(Grid)
         case photo(Data)
+        case doodle(Data)
     }
 
     /// Persist locally FIRST (canvas + widget echo + queue), then push to CloudKit.
@@ -260,6 +261,8 @@ final class AppModel {
             echo = .dots(grid, senderID: "", senderName: name, token: token, sentAt: now)
         case .photo(let data):
             echo = .photo(data, senderID: "", senderName: name, token: token, sentAt: now)
+        case .doodle(let data):
+            echo = .doodle(data, senderID: "", senderName: name, token: token, sentAt: now)
         }
         GridStore.shared.saveLocalEcho(echo)
         WidgetCenter.shared.reloadAllTimelines()
@@ -277,6 +280,10 @@ final class AppModel {
                                 token: profile.token, createdAt: now)
         case .photo(let data):
             queued = QueuedSend(id: UUID().uuidString, kind: .photo, grid: nil, imageData: data,
+                                recipientIDs: recipientIDs, senderName: profile.name,
+                                token: profile.token, createdAt: now)
+        case .doodle(let data):
+            queued = QueuedSend(id: UUID().uuidString, kind: .doodle, grid: nil, imageData: data,
                                 recipientIDs: recipientIDs, senderName: profile.name,
                                 token: profile.token, createdAt: now)
         }

@@ -37,8 +37,10 @@ struct FriendInfo: Codable, Equatable, Identifiable, Hashable {
     var token: IdentityToken
 }
 
-/// What a message carries. A message is either a dot-grid or a photo.
-enum MessageKind: String, Codable { case dots, photo }
+/// What a message carries: a dot-grid, a photo, or a freehand doodle. Doodles
+/// transport as a JPEG like photos, but the widget fits (not fills) them so they
+/// never crop at the edges.
+enum MessageKind: String, Codable { case dots, photo, doodle }
 
 /// Geometry the photo frame and widget image share, so framing is WYSIWYG.
 enum WidgetMetrics {
@@ -79,6 +81,12 @@ struct DisplayDrawing: Codable, Equatable {
     static func photo(_ imageData: Data, senderID: String, senderName: String,
                       token: IdentityToken, sentAt: Date) -> DisplayDrawing {
         DisplayDrawing(kind: .photo, imageData: imageData, senderID: senderID,
+                       senderName: senderName, token: token, sentAt: sentAt)
+    }
+
+    static func doodle(_ imageData: Data, senderID: String, senderName: String,
+                       token: IdentityToken, sentAt: Date) -> DisplayDrawing {
+        DisplayDrawing(kind: .doodle, imageData: imageData, senderID: senderID,
                        senderName: senderName, token: token, sentAt: sentAt)
     }
 
