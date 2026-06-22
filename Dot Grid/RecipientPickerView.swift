@@ -77,7 +77,7 @@ struct RecipientPickerView: View {
         VStack(spacing: 16) {
             Image(systemName: "person.2.slash")
                 .font(.system(size: 44)).foregroundStyle(.white.opacity(0.4))
-            Text("No friends yet").font(DotFont.heavy(20)).foregroundStyle(.white)
+            Text("no friends yet").font(DotFont.heavy(20)).foregroundStyle(.white)
             Text("Add a friend to start sending.")
                 .font(DotFont.ui(15)).foregroundStyle(.white.opacity(0.5))
             Button("Add a friend") { showAddFriend = true }
@@ -94,7 +94,7 @@ struct RecipientPickerView: View {
             onSend(Array(selected))
             dismiss()
         } label: {
-            Text(selected.isEmpty ? "PICK SOMEONE" : "SEND TO \(selected.count)")
+            Text(selected.isEmpty ? "pick someone" : "send to \(selected.count)")
                 .font(DotFont.heavy(18))
                 .contentTransition(.numericText())
                 .foregroundStyle(.white)

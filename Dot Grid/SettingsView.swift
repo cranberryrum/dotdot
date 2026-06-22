@@ -77,7 +77,7 @@ struct SettingsView: View {
     private var profileCard: some View {
         card {
             HStack {
-                Text("Profile").font(DotFont.heavy(15)).foregroundStyle(.white)
+                Text("profile").font(DotFont.heavy(15)).foregroundStyle(.white)
                 Spacer()
                 TokenBadge(token: token, size: 44)
                     .animation(.spring(response: 0.25, dampingFraction: 0.7), value: token)
@@ -142,7 +142,7 @@ struct SettingsView: View {
 
     private var codeCard: some View {
         card {
-            Text("Your code").font(DotFont.heavy(15)).foregroundStyle(.white)
+            Text("your code").font(DotFont.heavy(15)).foregroundStyle(.white)
             Text("Generate a code and share it however you like. Single-use, expires in 10 minutes.")
                 .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))
 

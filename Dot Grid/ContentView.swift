@@ -512,7 +512,7 @@ struct ContentView: View {
             HStack(spacing: 10) {
                 Image(systemName: justSent ? "checkmark" : "paperplane.fill")
                     .contentTransition(.symbolEffect(.replace.downUp))
-                Text(justSent ? "SENT!" : "SEND")
+                Text(justSent ? "sent!" : "send")
                     .contentTransition(.opacity)
             }
             .font(DotFont.heavy(19))

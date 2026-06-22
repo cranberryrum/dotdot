@@ -64,7 +64,7 @@ struct AddFriendView: View {
 
     private var header: some View {
         VStack(spacing: 6) {
-            Text("ADD A FRIEND")
+            Text("add a friend")
                 .font(DotFont.heavy(22))
                 .foregroundStyle(.white)
             Text("Pairing is instant — no requests to approve.")
@@ -78,7 +78,7 @@ struct AddFriendView: View {
 
     private var enterCodeCard: some View {
         card {
-            Text("ENTER A CODE")
+            Text("enter a code")
                 .font(DotFont.heavy(15)).foregroundStyle(.white)
             TextField("", text: $codeEntry, prompt: Text("6-digit code").foregroundStyle(.white.opacity(0.4)))
                 .keyboardType(.numberPad)
@@ -125,7 +125,7 @@ struct AddFriendView: View {
 
     private var shareCard: some View {
         card {
-            Text("Your code")
+            Text("your code")
                 .font(DotFont.heavy(15)).foregroundStyle(.white)
             Text("Share this with a friend so they can add you.")
                 .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))

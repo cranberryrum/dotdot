@@ -64,7 +64,7 @@ struct OnboardingView: View {
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: token)
 
             VStack(spacing: 6) {
-                Text("WHAT'S YOUR NAME?")
+                Text("what's your name?")
                     .font(DotFont.heavy(22))
                     .foregroundStyle(.white)
                 Text("This is how friends see you.")
@@ -173,7 +173,7 @@ struct OnboardingView: View {
     }
 
     private func primaryLabel(_ text: String) -> some View {
-        Text(text.uppercased())
+        Text(text.lowercased())
             .font(DotFont.heavy(18))
             .foregroundStyle(token.prefersDarkText ? Color.black.opacity(0.85) : .white)
             .frame(maxWidth: .infinity)

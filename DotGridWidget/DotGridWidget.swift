@@ -28,6 +28,10 @@ extension DisplayDrawing {
 // MARK: - Shared widget view (renders dots OR photo)
 
 struct DotGridWidgetView: View {
+    // With content margins disabled (see the widget configs), the system still
+    // reports the margins it *would* have used so we can re-apply them only where
+    // we want them — the dots grid stays inset; the photo bleeds to the edges.
+    @Environment(\.widgetContentMargins) private var margins
     let drawing: DisplayDrawing?
 
     var body: some View {
@@ -35,7 +39,7 @@ struct DotGridWidgetView: View {
             content
             if let drawing, !drawing.senderID.isEmpty {
                 TokenBadge(token: drawing.token, size: 30)
-                    .padding(8)
+                    .padding(12)
             }
             if drawing == nil {
                 Text("dots & photos from\nfriends show up here")
@@ -54,21 +58,25 @@ struct DotGridWidgetView: View {
             switch drawing.kind {
             case .photo:
                 if let data = drawing.imageData, let ui = UIImage(data: data) {
+                    // Edge-to-edge: no margins, fills the whole widget (the system
+                    // masks it to the widget's rounded corners for us).
                     Image(uiImage: ui)
                         .resizable()
                         .scaledToFill()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipped()
                 } else {
-                    photoPlaceholder   // never blank or crash
+                    photoPlaceholder.padding(margins)   // never blank or crash
                 }
             case .dots:
                 // Idle "throb" breath, which is widget-only.
                 GridBoardView(grid: drawing.grid ?? .empty, spacing: 5)
                     .throb()
+                    .padding(margins)
             }
         } else {
             GridBoardView(grid: .empty, spacing: 5)
+                .padding(margins)
         }
     }
 
@@ -108,6 +116,7 @@ struct DotGridWidget: Widget {
         .configurationDisplayName("dotdot")
         .description("the latest drawing from a friend.")
         .supportedFamilies([.systemLarge])
+        .contentMarginsDisabled()   // let photos bleed to the widget edges
     }
 }
 
@@ -175,6 +184,7 @@ struct DotGridFriendWidget: Widget {
         .configurationDisplayName("friend's dotdot")
         .description("pin one friend's latest drawing.")
         .supportedFamilies([.systemLarge])
+        .contentMarginsDisabled()   // let photos bleed to the widget edges
     }
 }
 
