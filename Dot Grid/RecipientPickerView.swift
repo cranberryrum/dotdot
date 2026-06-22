@@ -45,7 +45,7 @@ struct RecipientPickerView: View {
             let valid = Set(appModel.friends.map(\.id))
             selected = Set(appModel.lastRecipientIDs).intersection(valid)
         }
-        .sheet(isPresented: $showAddFriend) { AddFriendView() }
+        .sheet(isPresented: $showAddFriend) { AddFriendView().sheetGrabber() }
     }
 
     private var friendList: some View {

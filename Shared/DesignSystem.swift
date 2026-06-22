@@ -99,4 +99,17 @@ struct Throb: ViewModifier {
 
 extension View {
     func throb() -> some View { modifier(Throb()) }
+
+    /// A cute cream drag-handle floated at the top of a bottom sheet. Works over
+    /// both nav-bar sheets and plain scroll sheets (it's a non-interactive overlay,
+    /// so it never sits in a background strip or blocks taps).
+    func sheetGrabber() -> some View {
+        overlay(alignment: .top) {
+            Capsule(style: .continuous)
+                .fill(Theme.cream.opacity(0.5))
+                .frame(width: 40, height: 6)
+                .padding(.top, 8)
+                .allowsHitTesting(false)
+        }
+    }
 }

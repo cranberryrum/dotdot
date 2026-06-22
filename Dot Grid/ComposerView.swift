@@ -43,9 +43,9 @@ struct ComposerView: View {
         .font(DotFont.ui(17))   // Hanken Grotesk is the default UI/body font
         .textCase(.lowercase)   // the whole app reads lowercase
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showAddFriend) { AddFriendView() }
-        .sheet(isPresented: $showDebug) { DebugView() }
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showAddFriend) { AddFriendView().sheetGrabber() }
+        .sheet(isPresented: $showDebug) { DebugView().sheetGrabber() }
+        .sheet(isPresented: $showSettings) { SettingsView().sheetGrabber() }
     }
 
     // MARK: Top bar (shared across modes)

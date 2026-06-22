@@ -64,6 +64,7 @@ struct PhotoComposerView: View {
                 GalleryPicker { setImage($0) }.ignoresSafeArea()
             case .recipients:
                 RecipientPickerView { recipients in finalizeSend(to: recipients) }
+                    .sheetGrabber()
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
