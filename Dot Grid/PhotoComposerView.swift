@@ -37,6 +37,9 @@ struct PhotoComposerView: View {
     @State private var pendingPhoto: Data?
     @State private var justSent = false
     @State private var sendResetTask: Task<Void, Never>?
+    // True once this exact framed shot has been sent; the button shows "sent" +
+    // disables until you pick a new photo or re-frame it.
+    @State private var hasSent = false
 
     private let maxZoom: CGFloat = 5
     private let sendHaptic = UIImpactFeedbackGenerator(style: .medium)
@@ -130,6 +133,7 @@ struct PhotoComposerView: View {
                 let base = baseFillSize(for: image, side: side)
                 zoom = clampedZoom(zoom * value.magnification)
                 offset = clampOffset(offset, dispW: base.width * zoom, dispH: base.height * zoom, side: side)
+                if hasSent { withAnimation { hasSent = false } }   // re-framed → can send again
             }
         let pan = DragGesture()
             .updating($drag) { value, state, _ in state = value.translation }
@@ -141,6 +145,7 @@ struct PhotoComposerView: View {
                 let moved = CGSize(width: offset.width + value.translation.width,
                                    height: offset.height + value.translation.height)
                 offset = clampOffset(moved, dispW: dw, dispH: dh, side: side)
+                if hasSent { withAnimation { hasSent = false } }   // re-framed → can send again
             }
         return magnify.simultaneously(with: pan)
     }
@@ -184,9 +189,9 @@ struct PhotoComposerView: View {
     private var sendButton: some View {
         Button { attemptSend() } label: {
             HStack(spacing: 10) {
-                Image(systemName: justSent ? "checkmark" : "paperplane.fill")
+                Image(systemName: hasSent ? "checkmark" : "paperplane.fill")
                     .contentTransition(.symbolEffect(.replace.downUp))
-                Text(justSent ? "sent!" : "send")
+                Text(hasSent ? "sent!" : "send")
                     .contentTransition(.opacity)
             }
             .font(DotFont.heavy(19))
@@ -198,11 +203,15 @@ struct PhotoComposerView: View {
                     .fill(Theme.blue)
             )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
-            .opacity(image == nil ? 0.5 : 1)
+            .opacity(sendDisabled ? 0.45 : 1)
         }
         .buttonStyle(SquishyButtonStyle())
-        .disabled(image == nil)
+        .disabled(sendDisabled)
+        .animation(.easeInOut(duration: 0.2), value: sendDisabled)
     }
+
+    /// Nothing to send: no photo yet, or this exact framed shot already went out.
+    private var sendDisabled: Bool { image == nil || hasSent }
 
     private func attemptSend() {
         guard let data = renderWidgetJPEG() else { return }
@@ -222,7 +231,10 @@ struct PhotoComposerView: View {
         sendHaptic.impactOccurred()
         sendHaptic.prepare()
         let morph: Animation = reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.4, dampingFraction: 0.62)
-        withAnimation(morph) { justSent = true }
+        withAnimation(morph) {
+            hasSent = true    // disables until a new photo / re-frame
+            justSent = true   // transient bounce
+        }
         sendResetTask?.cancel()
         sendResetTask = Task {
             try? await Task.sleep(for: .seconds(1.4))
@@ -253,6 +265,7 @@ struct PhotoComposerView: View {
         image = new.normalizedUp()
         zoom = 1
         offset = .zero
+        withAnimation { hasSent = false }   // new photo → can send again
     }
 
     /// Aspect-fill size: the smallest size that fully covers the square frame.

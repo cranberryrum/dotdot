@@ -125,8 +125,12 @@ final class AppModel {
     /// Lighter refresh when the app returns to the foreground.
     func onForeground() async {
         account = await service.accountState()
-        if case .available = account, profile != nil {
+        if case let .available(userID) = account, profile != nil {
             if phase == .iCloudUnavailable { await bootstrap(); return }
+            // Re-assert the push subscription each foreground — idempotent, and it
+            // self-heals if the very first attempt failed (e.g. before the
+            // recipientID index existed), so the recipient's widget gets pushes.
+            await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
             await refreshFriends()   // pick up friends added by the other party
             await pullIncoming()
             await flushOutbox()

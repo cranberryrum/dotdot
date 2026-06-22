@@ -21,6 +21,9 @@ struct ContentView: View {
 
     @State private var justSent = false
     @State private var sendResetTask: Task<Void, Never>?
+    // The exact grid last shipped. The send button shows "sent" + disables while
+    // the drawing is unchanged, and re-enables the moment you edit it.
+    @State private var lastSentGrid: Grid?
 
     @State private var clearedSnapshot: Grid?
     @State private var showClearedToast = false
@@ -496,7 +499,10 @@ struct ContentView: View {
         let morph: Animation = reduceMotion
             ? .easeInOut(duration: 0.25)
             : .spring(response: 0.4, dampingFraction: 0.62)
-        withAnimation(morph) { justSent = true }
+        withAnimation(morph) {
+            lastSentGrid = grid   // marks "sent" + disables until the drawing changes
+            justSent = true       // transient bounce
+        }
         sendResetTask?.cancel()
         sendResetTask = Task {
             try? await Task.sleep(for: .seconds(1.4))
@@ -505,14 +511,19 @@ struct ContentView: View {
         }
     }
 
+    /// The current drawing has already been shipped, unchanged since.
+    private var isSent: Bool { !grid.isEmpty && grid == lastSentGrid }
+    /// Nothing to send: an empty canvas, or the same thing we just sent.
+    private var sendDisabled: Bool { grid.isEmpty || isSent }
+
     private var sendButton: some View {
         Button {
             attemptSend()
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: justSent ? "checkmark" : "paperplane.fill")
+                Image(systemName: isSent ? "checkmark" : "paperplane.fill")
                     .contentTransition(.symbolEffect(.replace.downUp))
-                Text(justSent ? "sent!" : "send")
+                Text(isSent ? "sent!" : "send")
                     .contentTransition(.opacity)
             }
             .font(DotFont.heavy(19))
@@ -528,9 +539,12 @@ struct ContentView: View {
                     .fill(Palette.color(at: selectedColorIndex))
             )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
+            .opacity(sendDisabled ? 0.45 : 1)
         }
         .buttonStyle(SquishyButtonStyle())
+        .disabled(sendDisabled)
         .animation(.easeInOut(duration: 0.2), value: selectedColorIndex)
+        .animation(.easeInOut(duration: 0.2), value: sendDisabled)
     }
 }
 
