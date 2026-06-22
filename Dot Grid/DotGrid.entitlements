@@ -16,5 +16,7 @@
 	</array>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.weatherkit</key>
+	<true/>
 </dict>
 </plist>

@@ -20,6 +20,17 @@ enum ImageProcessing {
         targetPixels: CGFloat = WidgetMetrics.targetPixels,
         quality: CGFloat = 0.8
     ) -> Data? {
+        croppedSquare(from: image, normalizedRect: rect, targetPixels: targetPixels)?
+            .jpegData(compressionQuality: quality)
+    }
+
+    /// The framed square, cropped + downscaled to a widget-safe size, as a UIImage.
+    /// Used directly for plain photos and as the base layer when baking stickers in.
+    static func croppedSquare(
+        from image: UIImage,
+        normalizedRect rect: CGRect,
+        targetPixels: CGFloat = WidgetMetrics.targetPixels
+    ) -> UIImage? {
         let upright = image.normalizedUp()
         guard let cg = upright.cgImage else { return nil }
 
@@ -43,10 +54,9 @@ enum ImageProcessing {
         format.scale = 1            // size is already in pixels
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(size: size, format: format)
-        let resized = renderer.image { _ in
+        return renderer.image { _ in
             UIImage(cgImage: cropped).draw(in: CGRect(origin: .zero, size: size))
         }
-        return resized.jpegData(compressionQuality: quality)
     }
 }
 

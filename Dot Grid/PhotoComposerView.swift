@@ -41,12 +41,19 @@ struct PhotoComposerView: View {
     // disables until you pick a new photo or re-frame it.
     @State private var hasSent = false
 
+    // Stickers baked into the sent photo. Positions are normalized to the frame.
+    @State private var stickers: [PhotoSticker] = []
+    @State private var frameSide: CGFloat = 0
+    @State private var locationProvider = LocationProvider()
+
     private let maxZoom: CGFloat = 5
+    private let stickerSpace = "stickerFrame"
     private let sendHaptic = UIImpactFeedbackGenerator(style: .medium)
 
     var body: some View {
         VStack(spacing: 16) {
             frame
+            if image != nil { stickerTray }
             controls
             Spacer(minLength: 0)
             sendButton
@@ -87,14 +94,37 @@ struct PhotoComposerView: View {
                 if let image {
                     framedImage(image, side: side)
                         .gesture(framingGesture(side: side))
+                    stickerLayer(side: side)
                 } else {
                     emptyPrompt
                 }
             }
             .frame(width: side, height: side)
+            .coordinateSpace(name: stickerSpace)
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .onAppear { frameSide = side }
+            .onChange(of: side) { _, new in frameSide = new }
         }
         .aspectRatio(1, contentMode: .fit)
+    }
+
+    /// Draggable sticker pills layered over the photo (fixed size, drag to position).
+    @ViewBuilder
+    private func stickerLayer(side: CGFloat) -> some View {
+        ForEach($stickers) { $sticker in
+            StickerChip(icon: sticker.icon, text: sticker.text)
+                .position(x: sticker.position.x * side, y: sticker.position.y * side)
+                .gesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .named(stickerSpace))
+                        .onChanged { value in
+                            sticker.position = CGPoint(
+                                x: min(max(value.location.x / side, 0.10), 0.90),
+                                y: min(max(value.location.y / side, 0.07), 0.93)
+                            )
+                            if hasSent { hasSent = false }   // moved → can send again
+                        }
+                )
+        }
     }
 
     private func framedImage(_ image: UIImage, side: CGFloat) -> some View {
@@ -184,6 +214,91 @@ struct PhotoComposerView: View {
         }
     }
 
+    // MARK: Stickers
+
+    private var stickerTray: some View {
+        HStack(spacing: 10) {
+            ForEach(StickerKind.allCases) { kind in
+                let active = stickers.contains { $0.kind == kind }
+                Button { toggleSticker(kind) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: kind.defaultIcon)
+                        Text(kind.trayLabel)
+                    }
+                    .font(DotFont.ui(14, weight: .bold))
+                    .foregroundStyle(active ? Theme.ink : .white.opacity(0.8))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(active ? Theme.cream : Palette.boardBackground)
+                    )
+                }
+                .buttonStyle(SquishyButtonStyle())
+            }
+        }
+    }
+
+    /// Tap a tray pill to add that sticker; tap again to remove it.
+    private func toggleSticker(_ kind: StickerKind) {
+        if stickers.contains(where: { $0.kind == kind }) {
+            withAnimation(.snappy(duration: 0.2)) { remove(kind) }
+            if hasSent { hasSent = false }
+            return
+        }
+        if hasSent { hasSent = false }
+        switch kind {
+        case .time:
+            addSticker(.time, icon: kind.defaultIcon,
+                       text: Date.now.formatted(date: .omitted, time: .shortened))
+        case .location:
+            addSticker(.location, icon: kind.defaultIcon, text: "locating…")
+            Task { await resolveLocation() }
+        case .weather:
+            addSticker(.weather, icon: kind.defaultIcon, text: "…")
+            Task { await resolveWeather() }
+        }
+    }
+
+    private func addSticker(_ kind: StickerKind, icon: String, text: String) {
+        // Stagger so multiple pills don't land exactly on top of each other.
+        let pos = CGPoint(x: 0.5, y: min(0.30 + CGFloat(stickers.count) * 0.13, 0.85))
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            stickers.append(PhotoSticker(kind: kind, icon: icon, text: text, position: pos))
+        }
+    }
+
+    private func resolveLocation() async {
+        do {
+            let loc = try await locationProvider.current()
+            let name = await locationProvider.placeName(for: loc)
+            update(.location) { $0.text = name }
+        } catch {
+            remove(.location)
+            appModel.banner = "couldn't get your location"
+        }
+    }
+
+    private func resolveWeather() async {
+        do {
+            let loc = try await locationProvider.current()
+            let w = try await WeatherProvider.current(for: loc)
+            update(.weather) { $0.icon = w.icon; $0.text = w.text }
+        } catch {
+            remove(.weather)
+            appModel.banner = "couldn't get the weather"
+        }
+    }
+
+    private func update(_ kind: StickerKind, _ change: (inout PhotoSticker) -> Void) {
+        guard let idx = stickers.firstIndex(where: { $0.kind == kind }) else { return }
+        change(&stickers[idx])
+    }
+
+    private func remove(_ kind: StickerKind) {
+        stickers.removeAll { $0.kind == kind }
+    }
+
     // MARK: Send
 
     private var sendButton: some View {
@@ -243,11 +358,45 @@ struct PhotoComposerView: View {
         }
     }
 
-    /// The exact framed square → downscaled, widget-safe JPEG.
+    /// The exact framed square → downscaled, widget-safe JPEG, with any stickers
+    /// baked in at the same positions you see on screen.
+    @MainActor
     private func renderWidgetJPEG() -> Data? {
+        guard let image, let rect = framedRect() else { return nil }
+
+        // No stickers → the original straight-crop fast path.
+        guard !stickers.isEmpty, frameSide > 0,
+              let base = ImageProcessing.croppedSquare(from: image, normalizedRect: rect)
+        else { return ImageProcessing.widgetJPEG(from: image, normalizedRect: rect) }
+
+        // Compose the on-screen layout, then upscale to widget pixels in one shot.
+        let side = frameSide
+        let composite = ZStack {
+            Image(uiImage: base)
+                .resizable()
+                .scaledToFill()
+                .frame(width: side, height: side)
+                .clipped()
+            ForEach(stickers) { s in
+                StickerChip(icon: s.icon, text: s.text)
+                    .position(x: s.position.x * side, y: s.position.y * side)
+            }
+        }
+        .frame(width: side, height: side)
+
+        let renderer = ImageRenderer(content: composite)
+        renderer.scale = WidgetMetrics.targetPixels / side
+        renderer.isOpaque = true
+        guard let baked = renderer.uiImage else {
+            return ImageProcessing.widgetJPEG(from: image, normalizedRect: rect)
+        }
+        return baked.jpegData(compressionQuality: 0.8)
+    }
+
+    /// The normalized square region currently framed (committed zoom/offset). Only
+    /// ratios matter, so any working `side` is fine.
+    private func framedRect() -> CGRect? {
         guard let image else { return nil }
-        // Recompute the framed region using committed zoom/offset against a unit
-        // frame; only ratios matter, so any side works.
         let side: CGFloat = 1000
         let base = baseFillSize(for: image, side: side)
         let dw = base.width * zoom
@@ -255,8 +404,7 @@ struct PhotoComposerView: View {
         let clamped = clampOffset(offset, dispW: dw, dispH: dh, side: side)
         let normX = (dw / 2 - clamped.width - side / 2) / dw
         let normY = (dh / 2 - clamped.height - side / 2) / dh
-        let rect = CGRect(x: normX, y: normY, width: side / dw, height: side / dh)
-        return ImageProcessing.widgetJPEG(from: image, normalizedRect: rect)
+        return CGRect(x: normX, y: normY, width: side / dw, height: side / dh)
     }
 
     // MARK: Framing math
@@ -265,6 +413,7 @@ struct PhotoComposerView: View {
         image = new.normalizedUp()
         zoom = 1
         offset = .zero
+        stickers = []                       // start the new photo clean
         withAnimation { hasSent = false }   // new photo → can send again
     }
 

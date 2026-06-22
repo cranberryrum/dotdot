@@ -33,6 +33,15 @@ DOTDOT does not read your photo library on its own — you choose a specific pho
 through Apple's system picker, which does not give the app access to your whole
 library. The camera is used only if you choose to take a photo.
 
+## Location and weather stickers
+
+If you add a **place** or **weather** sticker to a photo, DOTDOT asks for your
+location (while using the app) and uses it once to look up a nearby place name and
+the current weather (via Apple's WeatherKit). Your location coordinates are **not
+stored and never leave your device** — only the resulting text (e.g. a city name or
+temperature) is drawn onto the photo, and only if you choose to send it. If you
+don't add those stickers, the app never requests your location.
+
 ## Why we store it
 
 Solely to provide the app's core function: letting you pair with friends and send
