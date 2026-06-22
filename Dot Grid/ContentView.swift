@@ -70,7 +70,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
-                .sheetGrabber()
         }
         .overlay(alignment: .bottom) {
             if showClearedToast {
