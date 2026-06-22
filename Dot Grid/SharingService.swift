@@ -244,6 +244,28 @@ final class SharingService {
         return friends.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// Remove the friendship between me and `friendID`. There's a single shared
+    /// Friendship record per pair, so deleting it unfriends BOTH of us. Best-effort.
+    func removeFriend(_ friendID: String, myID: String, myParticipantID: String) async {
+        // The exact record (current pairings are always keyed by participant IDs).
+        let members = [myParticipantID, friendID].sorted()
+        let name = "pair_" + members.map(recordNameComponent).joined(separator: "__")
+        _ = try? await db.deleteRecord(withID: CKRecord.ID(recordName: name))
+
+        // Fallback: any friendship that contains BOTH me and this friend (covers a
+        // legacy record keyed by user ID). Never touch the friend's OTHER pairings.
+        let mine = Set([myParticipantID, myID])
+        let query = CKQuery(recordType: RT.friendship, predicate: NSPredicate(format: "members CONTAINS %@", friendID))
+        if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
+            for record in results.compactMap({ try? $0.1.get() }) {
+                let mem = Set((record["members"] as? [String]) ?? [])
+                if !mine.isDisjoint(with: mem) {
+                    _ = try? await db.deleteRecord(withID: record.recordID)
+                }
+            }
+        }
+    }
+
     // MARK: - Delete my data
 
     /// Best-effort removal of the user's own CloudKit footprint: their profile,

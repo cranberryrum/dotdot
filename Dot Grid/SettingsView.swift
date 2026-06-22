@@ -178,7 +178,7 @@ struct SettingsView: View {
 
     private var linksCard: some View {
         card {
-            settingsRow("person.badge.plus", "Add a friend") { showAddFriend = true }
+            settingsRow("person.2.fill", "friends") { showAddFriend = true }
             divider
             NavigationLink { PrivacyPolicyView(url: privacyPolicyURL) } label: {
                 rowLabel("hand.raised.fill", "Privacy policy")

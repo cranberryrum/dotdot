@@ -214,6 +214,18 @@ final class AppModel {
         await refreshFriends()
     }
 
+    /// Public refresh for the friends screen (pull the latest roster from CloudKit).
+    func reloadFriends() async { await refreshFriends() }
+
+    /// Remove a friend on both sides (deletes the shared Friendship record), and
+    /// update the local roster immediately.
+    func removeFriend(_ friend: FriendInfo) async {
+        guard case let .available(userID) = account else { return }
+        await service.removeFriend(friend.id, myID: userID, myParticipantID: participantID(for: userID))
+        friends.removeAll { $0.id == friend.id }
+        GridStore.shared.saveRoster(friends)
+    }
+
     private func refreshFriends() async {
         guard case let .available(userID) = account else { return }
         do {

@@ -2,8 +2,9 @@
 //  AddFriendView.swift
 //  Dot Grid
 //
-//  Pairing is code-only, no approval: type a friend's one-time code, or share
-//  your own copyable code. No links.
+//  Friends screen: a compact pairing card (tab between "add a friend" and "your
+//  code") and, below it, the list of your current friends with a remove option.
+//  Pairing is code-only, instant, no approval.
 //
 
 import SwiftUI
@@ -12,47 +13,39 @@ import UIKit
 struct AddFriendView: View {
     @Environment(AppModel.self) private var appModel
 
-    /// Called when used inside onboarding ("Done"). Nil when shown as a sheet.
+    /// Called when used inside onboarding ("continue"). Nil when shown as a sheet.
     var onDone: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
 
+    private enum PairTab: String, CaseIterable {
+        case add, share
+        var title: String { self == .add ? "add a friend" : "your code" }
+    }
+    @State private var tab: PairTab = .add
+    @Namespace private var tabNS
+
+    // Enter a code
     @State private var codeEntry = ""
     @State private var connecting = false
     @State private var resultText: String?
     @State private var resultIsError = false
 
+    // Your code
     @State private var myCode: String?
     @State private var generating = false
     @State private var copied = false
     @State private var copiedResetTask: Task<Void, Never>?
 
+    // Friends
+    @State private var friendToRemove: FriendInfo?
+    @State private var removingID: String?
+
     var body: some View {
         ScrollView {
-            VStack(spacing: 22) {
-                header
-
-                enterCodeCard
-                shareCard
-
-                if let resultText {
-                    Text(resultText)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(resultIsError ? .red.opacity(0.9) : .green.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .transition(.opacity)
-                }
-
-                Button {
-                    onDone?() ?? dismiss()
-                } label: {
-                    Text(onDone == nil ? "Done" : "Continue to drawing")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 54)
-                        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Palette.boardBackground))
-                }
-                .buttonStyle(SquishyButtonStyle())
+            VStack(spacing: 16) {
+                pairCard
+                friendsCard
+                doneButton
             }
             .padding(20)
         }
@@ -60,29 +53,73 @@ struct AddFriendView: View {
         .font(DotFont.ui(17))
         .textCase(.lowercase)
         .preferredColorScheme(.dark)
-    }
-
-    private var header: some View {
-        VStack(spacing: 6) {
-            Text("add a friend")
-                .font(DotFont.heavy(22))
-                .foregroundStyle(.white)
-            Text("Pairing is instant — no requests to approve.")
-                .font(DotFont.ui(14))
-                .foregroundStyle(.white.opacity(0.5))
+        .task { await appModel.reloadFriends() }
+        .alert(
+            "remove friend?",
+            isPresented: Binding(get: { friendToRemove != nil },
+                                 set: { if !$0 { friendToRemove = nil } }),
+            presenting: friendToRemove
+        ) { friend in
+            Button("remove", role: .destructive) { Task { await remove(friend) } }
+            Button("cancel", role: .cancel) {}
+        } message: { friend in
+            Text("you'll stop sending to and receiving from \(friend.name). you can always pair again with a new code.")
         }
-        .padding(.top, 8)
     }
 
-    // MARK: Enter a code
+    // MARK: - Pairing card (tabbed)
 
-    private var enterCodeCard: some View {
+    private var pairCard: some View {
         card {
-            Text("enter a code")
-                .font(DotFont.heavy(15)).foregroundStyle(.white)
+            tabToggle
+            switch tab {
+            case .add:   enterCodeContent
+            case .share: shareContent
+            }
+            if let resultText {
+                Text(resultText)
+                    .font(DotFont.ui(13, weight: .bold))
+                    .foregroundStyle(resultIsError ? Theme.red : Theme.mint)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    private var tabToggle: some View {
+        HStack(spacing: 4) {
+            ForEach(PairTab.allCases, id: \.self) { t in
+                let selected = tab == t
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) { tab = t }
+                } label: {
+                    Text(t.title)
+                        .font(DotFont.ui(14, weight: .bold))
+                        .foregroundStyle(selected ? Theme.ink : .white.opacity(0.55))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 38)
+                        .background {
+                            if selected {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Theme.cream)
+                                    .matchedGeometryEffect(id: "pairPill", in: tabNS)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.05)))
+    }
+
+    private var enterCodeContent: some View {
+        VStack(spacing: 12) {
             TextField("", text: $codeEntry, prompt: Text("6-digit code").foregroundStyle(.white.opacity(0.4)))
                 .keyboardType(.numberPad)
-                .font(DotFont.mono(28, bold: true))
+                .font(DotFont.mono(26, bold: true))
+                .tracking(4)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.white)
                 .padding(.vertical, 12)
@@ -90,13 +127,11 @@ struct AddFriendView: View {
                 .onChange(of: codeEntry) { _, new in
                     codeEntry = String(new.filter(\.isNumber).prefix(6))
                 }
-            Button {
-                Task { await connect() }
-            } label: {
-                Text(connecting ? "Connecting…" : "Connect")
-                    .font(.headline.weight(.bold))
+            Button { Task { await connect() } } label: {
+                Text(connecting ? "connecting…" : "connect")
+                    .font(DotFont.ui(15, weight: .bold))
                     .foregroundStyle(.black.opacity(0.85))
-                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .frame(maxWidth: .infinity).frame(height: 46)
                     .background(Capsule().fill(.white))
             }
             .buttonStyle(SquishyButtonStyle())
@@ -105,56 +140,35 @@ struct AddFriendView: View {
         }
     }
 
-    private func connect() async {
-        connecting = true
-        withAnimation { resultText = nil }
-        do {
-            try await appModel.addFriend(byCode: codeEntry)
-            withAnimation { resultText = "Connected! 🎉"; resultIsError = false }
-            codeEntry = ""
-        } catch {
-            withAnimation {
-                resultText = (error as? PairingError)?.errorDescription ?? "Couldn't connect."
-                resultIsError = true
-            }
-        }
-        connecting = false
-    }
-
-    // MARK: Your code
-
-    private var shareCard: some View {
-        card {
-            Text("your code")
-                .font(DotFont.heavy(15)).foregroundStyle(.white)
-            Text("Share this with a friend so they can add you.")
-                .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))
-
+    private var shareContent: some View {
+        VStack(spacing: 12) {
             if let myCode {
                 HStack(spacing: 12) {
                     Text(myCode)
-                        .font(DotFont.mono(38, bold: true))
-                        .tracking(6)
+                        .font(DotFont.mono(34, bold: true))
+                        .tracking(5)
                         .foregroundStyle(Theme.lime)
                     Spacer()
                     Button { copy(myCode) } label: {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc.fill")
                             .font(.headline.weight(.bold))
                             .foregroundStyle(.black.opacity(0.85))
-                            .frame(width: 48, height: 48)
+                            .frame(width: 46, height: 46)
                             .background(Circle().fill(.white))
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(SquishyButtonStyle())
                 }
-                Text("Single-use · expires in 10 minutes")
+                Text("single-use · expires in 10 minutes")
                     .font(DotFont.mono(11)).foregroundStyle(.white.opacity(0.5))
+            } else {
+                Text("make a code and share it however you like — your friend types it in to pair.")
+                    .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Button {
-                Task { await makeCode() }
-            } label: {
-                Text(generating ? "Generating…" : (myCode == nil ? "Get a code" : "Get a new code"))
+            Button { Task { await makeCode() } } label: {
+                Text(generating ? "generating…" : (myCode == nil ? "get a code" : "get a new code"))
                     .font(DotFont.ui(15, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity).frame(height: 46)
@@ -163,6 +177,112 @@ struct AddFriendView: View {
             .buttonStyle(SquishyButtonStyle())
             .disabled(generating)
         }
+    }
+
+    // MARK: - Friends list
+
+    private var friendsCard: some View {
+        card {
+            HStack {
+                Text("your friends").font(DotFont.heavy(15)).foregroundStyle(.white)
+                Spacer()
+                Text("\(appModel.friends.count)")
+                    .font(DotFont.mono(13, bold: true)).foregroundStyle(.white.opacity(0.5))
+            }
+
+            if appModel.friends.isEmpty {
+                emptyFriends
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(appModel.friends.enumerated()), id: \.element.id) { index, friend in
+                        if index > 0 {
+                            Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
+                        }
+                        friendRow(friend)
+                    }
+                }
+            }
+        }
+    }
+
+    private var emptyFriends: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "person.2.fill")
+                .font(.system(size: 26, weight: .bold))
+                .foregroundStyle(.white.opacity(0.25))
+            Text("no friends yet")
+                .font(DotFont.ui(15, weight: .bold)).foregroundStyle(.white.opacity(0.6))
+            Text("share your code, or enter a friend's.")
+                .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.4))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+    }
+
+    private func friendRow(_ friend: FriendInfo) -> some View {
+        HStack(spacing: 12) {
+            TokenBadge(token: friend.token, size: 40)
+            Text(friend.name)
+                .font(DotFont.ui(16, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Spacer()
+            if removingID == friend.id {
+                ProgressView().tint(.white.opacity(0.5))
+            } else {
+                Button { friendToRemove = friend } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.28))
+                }
+                .buttonStyle(SquishyButtonStyle())
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    // MARK: - Done
+
+    private var doneButton: some View {
+        Button { onDone?() ?? dismiss() } label: {
+            Text(onDone == nil ? "done" : "continue to drawing")
+                .font(DotFont.ui(16, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity).frame(height: 52)
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
+        }
+        .buttonStyle(SquishyButtonStyle())
+    }
+
+    // MARK: - Actions
+
+    private func connect() async {
+        connecting = true
+        withAnimation { resultText = nil }
+        do {
+            try await appModel.addFriend(byCode: codeEntry)
+            withAnimation { resultText = "connected! 🎉"; resultIsError = false }
+            codeEntry = ""
+        } catch {
+            withAnimation {
+                resultText = (error as? PairingError)?.errorDescription ?? "couldn't connect."
+                resultIsError = true
+            }
+        }
+        connecting = false
+    }
+
+    private func makeCode() async {
+        generating = true
+        copied = false
+        do { myCode = try await appModel.generateCode() }
+        catch {
+            withAnimation {
+                resultText = (error as? PairingError)?.errorDescription ?? "couldn't make a code."
+                resultIsError = true
+            }
+        }
+        generating = false
     }
 
     private func copy(_ code: String) {
@@ -176,20 +296,18 @@ struct AddFriendView: View {
         }
     }
 
-    private func makeCode() async {
-        generating = true
-        copied = false
-        do { myCode = try await appModel.generateCode() }
-        catch { withAnimation { resultText = (error as? PairingError)?.errorDescription ?? "Couldn't make a code."; resultIsError = true } }
-        generating = false
+    private func remove(_ friend: FriendInfo) async {
+        removingID = friend.id
+        await appModel.removeFriend(friend)
+        removingID = nil
     }
 
-    // MARK: Card chrome
+    // MARK: - Card chrome
 
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(18)
+            .padding(16)
             .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Palette.boardBackground))
     }
 }
