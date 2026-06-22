@@ -19,7 +19,6 @@ struct SettingsView: View {
     @State private var colorIndex: Int
     @State private var saving = false
 
-    @State private var myCode: String?
     @State private var generatingCode = false
     @State private var copied = false
     @State private var copyResetTask: Task<Void, Never>?
@@ -70,6 +69,7 @@ struct SettingsView: View {
         .font(DotFont.ui(17))
         .textCase(.lowercase)
         .preferredColorScheme(.dark)
+        .task { await appModel.loadOrMintCode() }
     }
 
     // MARK: Profile
@@ -143,14 +143,14 @@ struct SettingsView: View {
     private var codeCard: some View {
         card {
             Text("your code").font(DotFont.heavy(15)).foregroundStyle(.white)
-            Text("Generate a code and share it however you like. Single-use, expires in 10 minutes.")
+            Text("share this with friends so they can add you — it's good for 6 hours.")
                 .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))
 
-            if let myCode {
+            if let code = appModel.inviteCode {
                 HStack(spacing: 12) {
-                    Text(myCode).font(DotFont.mono(36, bold: true)).tracking(6).foregroundStyle(Theme.lime)
+                    Text(code).font(DotFont.mono(36, bold: true)).tracking(6).foregroundStyle(Theme.lime)
                     Spacer()
-                    Button { copy(myCode) } label: {
+                    Button { copy(code) } label: {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc.fill")
                             .font(.headline.weight(.bold))
                             .foregroundStyle(.black.opacity(0.85))
@@ -160,10 +160,22 @@ struct SettingsView: View {
                     }
                     .buttonStyle(SquishyButtonStyle())
                 }
+
+                ShareLink(item: AppModel.inviteMessage(code: code)) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("share code")
+                    }
+                    .font(DotFont.ui(15, weight: .bold))
+                    .foregroundStyle(.black.opacity(0.85))
+                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .background(Capsule().fill(Theme.cream))
+                }
+                .buttonStyle(SquishyButtonStyle())
             }
 
             Button { Task { await makeCode() } } label: {
-                Text(generatingCode ? "generating…" : (myCode == nil ? "get a code" : "get a new code"))
+                Text(generatingCode ? "generating…" : (appModel.inviteCode == nil ? "get a code" : "new code"))
                     .font(DotFont.ui(15, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity).frame(height: 46)
@@ -253,7 +265,7 @@ struct SettingsView: View {
     private func makeCode() async {
         generatingCode = true
         copied = false
-        myCode = try? await appModel.generateCode()
+        await appModel.mintCode()
         generatingCode = false
     }
 

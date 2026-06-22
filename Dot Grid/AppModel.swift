@@ -33,6 +33,11 @@ final class AppModel {
     private(set) var outbox: [QueuedSend] = []
     private(set) var isOnline = true
 
+    /// The user's current pairing code, persisted per-device and shown until it
+    /// expires (6 hours). Reused across app opens so it's always ready to share.
+    private(set) var inviteCode: String?
+    private(set) var inviteCodeExpiresAt: Date?
+
     /// Transient message surfaced as a banner (e.g. pairing results).
     var banner: String?
 
@@ -99,6 +104,7 @@ final class AppModel {
             outbox = []
             UserDefaults.standard.removeObject(forKey: "lastRecipients")
             UserDefaults.standard.removeObject(forKey: "lastDrawingFetch")
+            clearInviteCode()
             WidgetCenter.shared.reloadAllTimelines()
         }
 
@@ -192,6 +198,7 @@ final class AppModel {
         for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients", "dotdotDeviceID"] {
             defaults.removeObject(forKey: key)
         }
+        clearInviteCode()
         profile = nil
         friends = []
         outbox = []
@@ -203,9 +210,61 @@ final class AppModel {
 
     // MARK: - Pairing
 
-    func generateCode() async throws -> String {
-        guard case let .available(userID) = account else { throw PairingError.notSignedIn }
-        return try await service.generateCode(ownerID: userID, ownerParticipantID: participantID(for: userID))
+    private static let codeKey = "inviteCode"
+    private static let codeExpiryKey = "inviteCodeExpiresAt"
+    private static let codeOwnerKey = "inviteCodeOwner"
+
+    /// Show the saved code if it's still valid for this device, otherwise mint a
+    /// fresh one. Called when the friends/settings screens appear.
+    func loadOrMintCode() async {
+        guard case let .available(userID) = account else { return }
+        let owner = participantID(for: userID)
+        let d = UserDefaults.standard
+        if let code = d.string(forKey: Self.codeKey),
+           let exp = d.object(forKey: Self.codeExpiryKey) as? Date,
+           d.string(forKey: Self.codeOwnerKey) == owner,
+           exp > Date() {
+            inviteCode = code
+            inviteCodeExpiresAt = exp
+            return
+        }
+        await mintCode()
+    }
+
+    /// Force a brand-new code (the user tapped "new code"), persisted for 6 hours.
+    @discardableResult
+    func mintCode() async -> Bool {
+        guard case let .available(userID) = account else { return false }
+        let owner = participantID(for: userID)
+        do {
+            let code = try await service.generateCode(ownerID: userID, ownerParticipantID: owner)
+            let exp = Date().addingTimeInterval(SharingService.inviteCodeValidity)
+            inviteCode = code
+            inviteCodeExpiresAt = exp
+            let d = UserDefaults.standard
+            d.set(code, forKey: Self.codeKey)
+            d.set(exp, forKey: Self.codeExpiryKey)
+            d.set(owner, forKey: Self.codeOwnerKey)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func clearInviteCode() {
+        inviteCode = nil
+        inviteCodeExpiresAt = nil
+        let d = UserDefaults.standard
+        [Self.codeKey, Self.codeExpiryKey, Self.codeOwnerKey].forEach { d.removeObject(forKey: $0) }
+    }
+
+    /// The message shared via the share sheet — a little pitch + the code.
+    static func inviteMessage(code: String) -> String {
+        """
+        add me on dotdot ✦ we send tiny dot-grid doodles & photos straight to each other's home-screen widget.
+
+        open the app → add a friend → enter my code: \(code) (good for 6 hours)
+        """
     }
 
     func addFriend(byCode code: String) async throws {

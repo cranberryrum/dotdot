@@ -67,9 +67,11 @@ The push subscription (`CKQuerySubscription` on `Drawing` where
 
 ## 3. Pairing is code-only
 
-Pairing is by 6-digit single-use code only — there is no invite link or
-`dotdot.app` domain. Generate your code in Settings (or Add a friend), copy it,
-and send it however you like; the other person types it in Add a friend.
+Pairing is by 6-digit code only — there is no invite link or `dotdot.app`
+domain. Your code is generated once, persisted on your device, and shown for
+**6 hours** (it's reusable within that window, so you can share it with several
+pals). Generate/share it in Settings or Add a friend (copy, or the share-sheet
+button); the other person types it in under Add a friend.
 
 ## 4. What's verified vs. what needs two devices
 

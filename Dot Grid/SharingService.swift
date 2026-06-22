@@ -144,14 +144,17 @@ final class SharingService {
 
     // MARK: - Pairing
 
-    /// Generate a fresh single-use 6-digit code, valid for 10 minutes.
+    /// How long a pairing code stays valid (and is shown to its owner).
+    static let inviteCodeValidity: TimeInterval = 6 * 60 * 60   // 6 hours
+
+    /// Generate a fresh 6-digit code, valid (and reusable) for 6 hours.
     func generateCode(ownerID: String, ownerParticipantID: String) async throws -> String {
         let code = String(format: "%06d", Int.random(in: 0...999_999))
         let record = CKRecord(recordType: RT.inviteCode)
         record["code"] = code as CKRecordValue
         record["ownerID"] = ownerID as CKRecordValue
         record["ownerParticipantID"] = ownerParticipantID as CKRecordValue
-        record["expiresAt"] = Date().addingTimeInterval(600) as CKRecordValue
+        record["expiresAt"] = Date().addingTimeInterval(Self.inviteCodeValidity) as CKRecordValue
         record["used"] = 0 as CKRecordValue
         try await db.save(record)
         return code
@@ -176,20 +179,14 @@ final class SharingService {
         let ownerID = record["ownerID"] as? String ?? ""
         let ownerParticipantID = record["ownerParticipantID"] as? String ?? ownerID
         let expiresAt = record["expiresAt"] as? Date ?? .distantPast
-        let used = (record["used"] as? Int) ?? 0
 
         if ownerParticipantID == myParticipantID { throw PairingError.ownCode }
         if ownerParticipantID == ownerID, ownerID == myID { throw PairingError.ownCode }
-        if used != 0 { throw PairingError.codeUsed }
         if expiresAt < Date() { throw PairingError.codeExpired }
 
+        // Codes are reusable until they expire, so a friend can share one with
+        // several pals over the 6-hour window. The friendship itself is idempotent.
         try await createFriendship(myID: myParticipantID, otherID: ownerParticipantID)
-
-        // Burn the code (best-effort; friendship already exists idempotently).
-        record["used"] = 1 as CKRecordValue
-        record["usedBy"] = myParticipantID as CKRecordValue
-        record["usedByUserID"] = myID as CKRecordValue
-        _ = try? await db.save(record)
     }
 
     /// Create the single friendship record for a pair. Idempotent: the recordName

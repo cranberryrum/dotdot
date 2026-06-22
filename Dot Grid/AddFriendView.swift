@@ -30,9 +30,8 @@ struct AddFriendView: View {
     @State private var resultText: String?
     @State private var resultIsError = false
 
-    // Your code
-    @State private var myCode: String?
-    @State private var generating = false
+    // Your code (the persistent code lives on AppModel)
+    @State private var refreshingCode = false
     @State private var copied = false
     @State private var copiedResetTask: Task<Void, Never>?
 
@@ -53,7 +52,10 @@ struct AddFriendView: View {
         .font(DotFont.ui(17))
         .textCase(.lowercase)
         .preferredColorScheme(.dark)
-        .task { await appModel.reloadFriends() }
+        .task {
+            await appModel.reloadFriends()
+            await appModel.loadOrMintCode()
+        }
         .alert(
             "remove friend?",
             isPresented: Binding(get: { friendToRemove != nil },
@@ -142,14 +144,14 @@ struct AddFriendView: View {
 
     private var shareContent: some View {
         VStack(spacing: 12) {
-            if let myCode {
+            if let code = appModel.inviteCode {
                 HStack(spacing: 12) {
-                    Text(myCode)
+                    Text(code)
                         .font(DotFont.mono(34, bold: true))
                         .tracking(5)
                         .foregroundStyle(Theme.lime)
                     Spacer()
-                    Button { copy(myCode) } label: {
+                    Button { copy(code) } label: {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc.fill")
                             .font(.headline.weight(.bold))
                             .foregroundStyle(.black.opacity(0.85))
@@ -159,23 +161,47 @@ struct AddFriendView: View {
                     }
                     .buttonStyle(SquishyButtonStyle())
                 }
-                Text("single-use · expires in 10 minutes")
-                    .font(DotFont.mono(11)).foregroundStyle(.white.opacity(0.5))
+                if let exp = appModel.inviteCodeExpiresAt {
+                    Text("expires \(exp, style: .relative) · reusable till then")
+                        .font(DotFont.mono(11)).foregroundStyle(.white.opacity(0.5))
+                }
+
+                ShareLink(item: AppModel.inviteMessage(code: code)) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("share code")
+                    }
+                    .font(DotFont.ui(15, weight: .bold))
+                    .foregroundStyle(.black.opacity(0.85))
+                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .background(Capsule().fill(Theme.cream))
+                }
+                .buttonStyle(SquishyButtonStyle())
+
+                Button { Task { await refreshCode() } } label: {
+                    Text(refreshingCode ? "refreshing…" : "new code")
+                        .font(DotFont.ui(14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity).frame(height: 40)
+                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.06)))
+                }
+                .buttonStyle(SquishyButtonStyle())
+                .disabled(refreshingCode)
             } else {
-                Text("make a code and share it however you like — your friend types it in to pair.")
+                Text("make a code and share it with friends — it's good for 6 hours.")
                     .font(DotFont.ui(13)).foregroundStyle(.white.opacity(0.5))
                     .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
-            Button { Task { await makeCode() } } label: {
-                Text(generating ? "generating…" : (myCode == nil ? "get a code" : "get a new code"))
-                    .font(DotFont.ui(15, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity).frame(height: 46)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.08)))
+                Button { Task { await refreshCode() } } label: {
+                    Text(refreshingCode ? "generating…" : "get a code")
+                        .font(DotFont.ui(15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.08)))
+                }
+                .buttonStyle(SquishyButtonStyle())
+                .disabled(refreshingCode)
             }
-            .buttonStyle(SquishyButtonStyle())
-            .disabled(generating)
         }
     }
 
@@ -272,17 +298,14 @@ struct AddFriendView: View {
         connecting = false
     }
 
-    private func makeCode() async {
-        generating = true
+    private func refreshCode() async {
+        refreshingCode = true
         copied = false
-        do { myCode = try await appModel.generateCode() }
-        catch {
-            withAnimation {
-                resultText = (error as? PairingError)?.errorDescription ?? "couldn't make a code."
-                resultIsError = true
-            }
+        let ok = await appModel.mintCode()
+        if !ok {
+            withAnimation { resultText = "couldn't make a code."; resultIsError = true }
         }
-        generating = false
+        refreshingCode = false
     }
 
     private func copy(_ code: String) {
