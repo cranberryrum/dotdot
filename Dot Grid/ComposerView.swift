@@ -9,7 +9,7 @@
 
 import SwiftUI
 
-enum ComposeMode: String { case dots, photo }
+enum ComposeMode: String { case dots, photo, doodle }
 
 struct ComposerView: View {
     @Environment(AppModel.self) private var appModel
@@ -36,6 +36,9 @@ struct ComposerView: View {
                     PhotoComposerView()
                         .opacity(mode == .photo ? 1 : 0)
                         .allowsHitTesting(mode == .photo)
+                    DoodleComposerView()
+                        .opacity(mode == .doodle ? 1 : 0)
+                        .allowsHitTesting(mode == .doodle)
                 }
             }
             .padding(20)
@@ -121,6 +124,7 @@ struct ComposerView: View {
         HStack(spacing: 4) {
             segment(.dots, label: "Dots", icon: "circle.grid.3x3.fill")
             segment(.photo, label: "Photo", icon: "photo.fill")
+            segment(.doodle, label: "Doodle", icon: "scribble.variable")
         }
         .padding(4)
         .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
