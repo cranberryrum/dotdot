@@ -14,7 +14,7 @@ enum ComposeMode: String { case dots, photo, doodle }
 /// The one sheet that can be up over the composer at a time. A single `.sheet(item:)`
 /// avoids the multiple-`.sheet`-on-one-view presentation glitches.
 private enum ActiveSheet: Int, Identifiable {
-    case inbox, addFriend, settings, debug
+    case inbox, addFriend, settings, debug, notificationPriming
     var id: Int { rawValue }
 }
 
@@ -55,17 +55,40 @@ struct ComposerView: View {
         .preferredColorScheme(.dark)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
-            case .inbox:     InboxView()
-            case .addFriend: AddFriendView()
-            case .settings:  SettingsView()
-            case .debug:     DebugView()
+            case .inbox:               InboxView()
+            case .addFriend:           AddFriendView()
+            case .settings:            SettingsView()
+            case .debug:               DebugView()
+            case .notificationPriming: NotificationPrimingSheet()
             }
         }
         .onAppear { playInboxShimmer() }                                   // cold launch
+        .task { await appModel.notifications.refresh() }                   // live notif status
         .onChange(of: appModel.inboxHasUnread) { _, unread in              // first unread arrives
             if unread { playInboxShimmer() }
         }
         .onChange(of: appModel.inboxShimmerNonce) { _, _ in playInboxShimmer() }   // warm open / live arrival
+        // The soft notification ask, requested by an automatic trigger (first send /
+        // pairing / received). Present it only once we're frontmost; a short delay lets
+        // any transient sheet (e.g. the recipient picker) finish dismissing first.
+        .onChange(of: appModel.notifications.wantsPriming) { _, wants in
+            if wants { scheduleNotificationPriming() }
+        }
+        .onChange(of: activeSheet) { _, sheet in
+            if sheet == nil && appModel.notifications.wantsPriming { scheduleNotificationPriming() }
+        }
+    }
+
+    private func scheduleNotificationPriming() {
+        Task {
+            try? await Task.sleep(for: .seconds(0.6))
+            let gate = appModel.notifications
+            guard gate.wantsPriming, gate.canPrime, activeSheet == nil else {
+                if !gate.canPrime { gate.wantsPriming = false }   // status changed under us
+                return
+            }
+            activeSheet = .notificationPriming   // sheet's onAppear consumes wantsPriming
+        }
     }
 
     /// Plays the wordmark sheen: two clean sweeps, then rest. Resetting the phase in

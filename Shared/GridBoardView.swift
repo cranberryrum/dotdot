@@ -8,15 +8,6 @@
 
 import SwiftUI
 
-/// Per-chip parameters for the "gravity" clear animation. `nil` means a static
-/// board — both the widget and the resting app board render without it.
-struct ChipFall: Equatable {
-    var trigger: Int
-    var distance: CGFloat
-    var delay: Double
-    var tilt: Double
-}
-
 /// Per-chip parameters for the Send "lift & land" hop. `nil` = no hop (widget).
 struct ChipLift: Equatable {
     var trigger: Int
@@ -26,18 +17,18 @@ struct ChipLift: Equatable {
 struct GridBoardView: View {
     let grid: Grid
     var spacing: CGFloat = 6
-    var fallTrigger: Int = 0
-    var fallDistance: CGFloat = 0   // 0 → no falling (widget / static render)
+    /// The interactive composer board (vs. the widget / static renders). Only the
+    /// interactive board gets the per-chip send "lift" hop.
+    var interactive: Bool = false
     var liftTrigger: Int = 0
 
     var body: some View {
         VStack(spacing: spacing) {
-            ForEach(0..<Grid.side, id: \.self) { row in
+            ForEach(0..<grid.side, id: \.self) { row in
                 HStack(spacing: spacing) {
-                    ForEach(0..<Grid.side, id: \.self) { column in
+                    ForEach(0..<grid.side, id: \.self) { column in
                         CellChipView(
                             cell: grid[row, column],
-                            fall: fall(row: row, column: column),
                             lift: lift(row: row, column: column)
                         )
                     }
@@ -46,28 +37,21 @@ struct GridBoardView: View {
         }
     }
 
-    // A gentle, organic stagger shared by the fall and the lift, so both
-    // ripple across the board instead of moving as one rigid sheet.
+    // A gentle, organic stagger so the lift ripples across the board instead of
+    // moving as one rigid sheet.
     private func chipDelay(row: Int, column: Int) -> Double {
         let jitter = Double((row &* 3 &+ column) % 4) * 0.012
         return Double(row) * 0.02 + jitter
     }
 
-    private func fall(row: Int, column: Int) -> ChipFall? {
-        guard fallDistance > 0 else { return nil }   // static render → no animation
-        let tilt = column < Grid.side / 2 ? -9.0 : 9.0
-        return ChipFall(trigger: fallTrigger, distance: fallDistance, delay: chipDelay(row: row, column: column), tilt: tilt)
-    }
-
     private func lift(row: Int, column: Int) -> ChipLift? {
-        guard fallDistance > 0 else { return nil }   // same "interactive board" flag
+        guard interactive else { return nil }   // static render → no animation
         return ChipLift(trigger: liftTrigger, delay: chipDelay(row: row, column: column))
     }
 }
 
 struct CellChipView: View {
     let cell: Cell?
-    var fall: ChipFall? = nil
     var lift: ChipLift? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -92,8 +76,10 @@ struct CellChipView: View {
 
     @ViewBuilder
     private func chip(cell: Cell, side: CGFloat) -> some View {
+        // Corner radius matches the empty cell's (both use the 0.32 ratio of their
+        // own side), so a lit dot is the same squircle as its outline, just filled.
         let chipSide = side * cell.size.scale
-        let shape = RoundedRectangle(cornerRadius: chipSide * 0.4, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: chipSide * 0.32, style: .continuous)
             .fill(Palette.color(at: cell.colorIndex))
             .frame(width: chipSide, height: chipSide)
             .transition(chipTransition)
@@ -101,59 +87,14 @@ struct CellChipView: View {
         if reduceMotion {
             shape
         } else {
-            shape
-                .modifier(FallingChip(fall: fall))
-                .modifier(LiftingChip(lift: lift))
+            shape.modifier(LiftingChip(lift: lift))
         }
     }
 
+    /// Dots scale in from 0 (placement / undo) and scale to 0 on the way out
+    /// (erase / clear) — a smooth, centered grow and shrink.
     private var chipTransition: AnyTransition {
-        reduceMotion
-            ? .opacity
-            : .asymmetric(
-                insertion: .scale(scale: 0.35).combined(with: .opacity),  // dotpop start
-                removal: .scale(scale: 0.2).combined(with: .opacity)       // dotpoof
-            )
-    }
-}
-
-/// Lifts the chip slightly, then drops it under "gravity" and fades it out.
-/// Plays once each time `fall.trigger` changes; at rest it's the identity.
-private struct FallingChip: ViewModifier {
-    let fall: ChipFall?
-
-    struct Phase {
-        var y: CGFloat = 0
-        var angle: Double = 0
-        var opacity: Double = 1
-    }
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if let fall {
-            content.keyframeAnimator(initialValue: Phase(), trigger: fall.trigger) { view, phase in
-                view
-                    .rotationEffect(.degrees(phase.angle))
-                    .offset(y: phase.y)
-                    .opacity(phase.opacity)
-            } keyframes: { _ in
-                KeyframeTrack(\.y) {
-                    LinearKeyframe(0, duration: max(fall.delay, 0.0001))   // staggered hold
-                    SpringKeyframe(-12, duration: 0.18, spring: .bouncy)   // the little lift
-                    CubicKeyframe(fall.distance, duration: 0.5)            // fall away under gravity
-                }
-                KeyframeTrack(\.angle) {
-                    LinearKeyframe(0, duration: fall.delay + 0.18)
-                    CubicKeyframe(fall.tilt, duration: 0.5)                // slight tumble as it drops
-                }
-                KeyframeTrack(\.opacity) {
-                    LinearKeyframe(1, duration: fall.delay + 0.18 + 0.34)
-                    LinearKeyframe(0, duration: 0.16)
-                }
-            }
-        } else {
-            content
-        }
+        reduceMotion ? .opacity : .scale.combined(with: .opacity)
     }
 }
 

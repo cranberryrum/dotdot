@@ -46,6 +46,10 @@ final class AppModel {
     /// replay its shimmer for that event (the cold-launch case is driven by unread).
     private(set) var inboxShimmerNonce = 0
 
+    /// The notification-permission flow (soft ask, live OS status, feed-nudge state).
+    /// Sending never depends on it.
+    @ObservationIgnored let notifications = NotificationGate()
+
     /// A transient top toast. Every transient message in the app goes through
     /// `showToast` so they're all consistent: top, swipe-to-dismiss, same motion.
     struct Toast: Identifiable, Equatable {
@@ -125,6 +129,7 @@ final class AppModel {
     /// Full sync: account check, account-switch handling, identity, friends,
     /// subscription, incoming drawings, and outbox flush.
     func bootstrap() async {
+        await notifications.refresh()   // live notification status, never cached
         phase = profile == nil ? .loading : .ready
         account = await service.accountState()
 
@@ -170,6 +175,7 @@ final class AppModel {
 
     /// Lighter refresh when the app returns to the foreground.
     func onForeground() async {
+        await notifications.refresh()   // user may have changed it in iOS Settings while away
         account = await service.accountState()
         if case let .available(userID) = account, profile != nil {
             if phase == .iCloudUnavailable { await bootstrap(); return }
@@ -203,6 +209,7 @@ final class AppModel {
         if count > 0 {
             WidgetCenter.shared.reloadAllTimelines()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
+            notifications.noteReceivedFromFriend()          // the one allowed re-prime
         }
     }
 
@@ -317,6 +324,8 @@ final class AppModel {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
         try await service.redeemCode(code, myID: userID, myParticipantID: participantID(for: userID))
         await refreshFriends()
+        // First successful pairing makes the loop real — prime once if that's first.
+        notifications.noteLoopBecameReal()
     }
 
     /// Public refresh for the friends screen (pull the latest roster from CloudKit).
@@ -382,6 +391,9 @@ final class AppModel {
         WidgetCenter.shared.reloadAllTimelines()
 
         guard let profile, !recipientIDs.isEmpty else { return }   // local-only send
+
+        // The two-way loop is real: first send to a friend can prime notifications.
+        notifications.noteLoopBecameReal()
 
         lastRecipientIDs = recipientIDs
         UserDefaults.standard.set(recipientIDs, forKey: "lastRecipients")
@@ -456,7 +468,10 @@ final class AppModel {
         do {
             let count = try await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))
             if lastError?.hasPrefix("Incoming fetch:") == true { lastError = nil }
-            if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
+            if count > 0 {
+                WidgetCenter.shared.reloadAllTimelines()
+                notifications.noteReceivedFromFriend()   // the one allowed re-prime
+            }
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }

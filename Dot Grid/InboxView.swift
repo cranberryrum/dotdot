@@ -32,6 +32,7 @@ struct InboxView: View {
     @State private var sent: [SentMessage] = []
     @State private var peek: InboxEntry?
     @State private var detent: PresentationDetent = .large
+    @State private var showNotifPriming = false
     @Namespace private var tabPill
 
     var body: some View {
@@ -42,6 +43,12 @@ struct InboxView: View {
                 tabBar
                     .padding(.horizontal, 20)
                     .padding(.bottom, 12)
+                if appModel.notifications.shouldShowFeedNudge {
+                    notifNudge
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 feed
             }
             if let peek { peekOverlay(peek) }
@@ -52,7 +59,59 @@ struct InboxView: View {
         .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.visible)
         .presentationBackground(Palette.screenBackground)
+        .sheet(isPresented: $showNotifPriming) { NotificationPrimingSheet() }
         .onAppear(perform: reload)
+        .task { await appModel.notifications.refresh() }   // live status, read fresh
+    }
+
+    // MARK: Notification nudge (calm, dismissible; shows only when undecided / denied)
+
+    private var notifNudge: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "bell.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Theme.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("turn on notifications").font(DotFont.ui(14, weight: .bold)).foregroundStyle(.white)
+                Text("know when a friend draws you something")
+                    .font(DotFont.ui(12)).foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button { nudgeTapped() } label: {
+                Text(appModel.notifications.status == .denied ? "settings" : "turn on")
+                    .font(DotFont.ui(13, weight: .bold))
+                    .foregroundStyle(Theme.ink)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Capsule(style: .continuous).fill(Theme.cream))
+            }
+            .buttonStyle(SquishyButtonStyle())
+            Button {
+                withAnimation(Motion.settle) { appModel.notifications.dismissFeedNudge() }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(SquishyButtonStyle())
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Palette.boardBackground)
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.white.opacity(0.06), lineWidth: 1))
+        )
+    }
+
+    private func nudgeTapped() {
+        if appModel.notifications.canPrime {
+            showNotifPriming = true                         // notDetermined → soft ask
+        } else {
+            appModel.notifications.openSystemSettings()     // denied → iOS Settings
+        }
     }
 
     private func reload() {

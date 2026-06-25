@@ -27,10 +27,6 @@ struct ContentView: View {
 
     @State private var clearedSnapshot: Grid?
 
-    @State private var fallTrigger = 0
-    @State private var isClearing = false
-    @State private var fallWorkTask: Task<Void, Never>?
-
     @State private var liftTrigger = 0
     @State private var ripples: [RippleEvent] = []
     @State private var launchGrid: Grid?
@@ -48,7 +44,6 @@ struct ContentView: View {
     private let paintHaptic = UIImpactFeedbackGenerator(style: .light)
     private let sendHaptic = UIImpactFeedbackGenerator(style: .medium)
     private let clearHaptic = UIImpactFeedbackGenerator(style: .rigid)
-    private let fallHaptic = UIImpactFeedbackGenerator(style: .soft)
 
     private enum DragMode { case paint, erase }
 
@@ -73,7 +68,6 @@ struct ContentView: View {
             paintHaptic.prepare()
             sendHaptic.prepare()
             clearHaptic.prepare()
-            fallHaptic.prepare()
         }
     }
 
@@ -85,8 +79,7 @@ struct ContentView: View {
             GridBoardView(
                 grid: grid,
                 spacing: boardSpacing,
-                fallTrigger: fallTrigger,
-                fallDistance: boardSide + 60,
+                interactive: true,
                 liftTrigger: liftTrigger
             )
             .overlay {
@@ -128,14 +121,14 @@ struct ContentView: View {
     }
 
     private func paint(at point: CGPoint, boardSide: CGFloat) {
-        let cellSide = (boardSide - CGFloat(Grid.side - 1) * boardSpacing) / CGFloat(Grid.side)
+        let cellSide = (boardSide - CGFloat(grid.side - 1) * boardSpacing) / CGFloat(grid.side)
         let step = cellSide + boardSpacing
         guard point.x >= 0, point.y >= 0 else { return }
         let column = Int(point.x / step)
         let row = Int(point.y / step)
-        guard (0..<Grid.side).contains(row), (0..<Grid.side).contains(column) else { return }
+        guard (0..<grid.side).contains(row), (0..<grid.side).contains(column) else { return }
 
-        let index = row * Grid.side + column
+        let index = row * grid.side + column
         // The first touched cell decides the stroke: empty starts painting,
         // filled starts erasing. A plain tap therefore toggles.
         let mode = dragMode ?? (grid.cells[index] == nil ? DragMode.paint : .erase)
@@ -177,7 +170,7 @@ struct ContentView: View {
 
     private var metadataRow: some View {
         HStack {
-            Text("\(Grid.side)×\(Grid.side) CANVAS").metaLabel()
+            Text("\(grid.side)×\(grid.side) CANVAS").metaLabel()
             Spacer()
             Text("\(filledCount) \(filledCount == 1 ? "DOT" : "DOTS")").metaLabel()
         }
@@ -194,6 +187,7 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 sizeButton
                 shapesButton
+                gridSizeButton
                 Spacer()
                 clearButton
             }
@@ -287,6 +281,41 @@ struct ContentView: View {
         .buttonStyle(SquishyButtonStyle())
     }
 
+    /// Toggles the canvas between 8×8 and 12×12. The icon is a live mini-grid that
+    /// densifies, so the switch reads at a glance and matches the other tool buttons.
+    private var gridSizeButton: some View {
+        Button { cycleGridSize() } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(Palette.boardBackground)
+                MiniGrid(side: grid.side)
+                    .frame(width: 26, height: 26)
+                    .animation(.snappy(duration: 0.22), value: grid.side)
+            }
+            .frame(width: 52, height: 52)
+        }
+        .buttonStyle(SquishyButtonStyle())
+    }
+
+    private func cycleGridSize() {
+        let next = grid.side >= 12 ? 8 : 12
+        let previous = grid
+        paintHaptic.impactOccurred()
+        paintHaptic.prepare()
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.86)) {
+            grid = .empty(side: next)
+        }
+        lastSentGrid = nil
+        GridStore.shared.save(grid)   // persist the chosen size (canvas saves only on send otherwise)
+        // Switching tosses the drawing — offer an undo (reuses the clear toast/undo).
+        if !previous.isEmpty {
+            clearedSnapshot = previous
+            appModel.showToast("\(next)×\(next) canvas", icon: "square.grid.3x3", actionTitle: "undo") {
+                undoClear()
+            }
+        }
+    }
+
     // MARK: Stamps
 
     private var stampTray: some View {
@@ -323,20 +352,22 @@ struct ContentView: View {
             showStampTray = false
         }
 
-        // Stop any in-flight clear/stamp cascade and start fresh.
-        fallWorkTask?.cancel()
+        // Stop any in-flight stamp cascade and start fresh (keep the canvas size).
         stampWorkTask?.cancel()
-        isClearing = false
-        grid = .empty
+        let side = grid.side
+        grid = .empty(side: side)
 
         let color = selectedColorIndex
+        let offset = max(0, (side - 8) / 2)   // stamps are 8×8 — center them on a bigger grid
         let points = stamp.points
 
         stampWorkTask = Task { @MainActor in
             for (i, point) in points.enumerated() {
                 if Task.isCancelled { return }
+                let r = point.row + offset, c = point.col + offset
+                guard r < side, c < side else { continue }
                 withAnimation(placementAnimation) {
-                    grid[point.row, point.col] = Cell(colorIndex: color, size: .medium)
+                    grid[r, c] = Cell(colorIndex: color, size: .medium)
                 }
                 // Throttle the light placement haptic to the cascade rhythm —
                 // a few taps across the fill, not one per chip.
@@ -352,48 +383,16 @@ struct ContentView: View {
     // MARK: Clear + undo
 
     private func clearGrid() {
-        guard !grid.isEmpty, !isClearing else { return }
+        guard !grid.isEmpty else { return }
         clearedSnapshot = grid
-
-        guard !reduceMotion else {
-            clearHaptic.impactOccurred()
-            clearHaptic.prepare()
-            grid = .empty
-            presentClearedToast()
-            return
+        clearHaptic.impactOccurred()
+        clearHaptic.prepare()
+        // Every dot scales smoothly to 0 (centered) — no drop. Undo grows them back
+        // from 0 (see undoClear + the chip's scale transition). Keep the canvas size.
+        withAnimation(reduceMotion ? .easeOut(duration: 0.18) : .easeOut(duration: 0.26)) {
+            grid = .empty(side: grid.side)
         }
-
-        let occupiedRows = (0..<Grid.side).filter { row in
-            (0..<Grid.side).contains { grid[row, $0] != nil }
-        }.count
-
-        isClearing = true
-        fallTrigger += 1                            // kicks off every chip's keyframe fall
-        fallHaptic.impactOccurred(intensity: 0.7)   // the lift-off
-        fallHaptic.prepare()
-
-        fallWorkTask?.cancel()
-        fallWorkTask = Task { @MainActor in
-            // A short cascade of soft taps as they tumble — enough to feel the
-            // delete land, not one buzz per chip.
-            let haptics = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(0.16))
-                let taps = min(occupiedRows, 6)
-                for i in 0..<taps {
-                    if Task.isCancelled { return }
-                    fallHaptic.impactOccurred(intensity: max(0.3, 0.5 - Double(i) * 0.04))
-                    fallHaptic.prepare()
-                    try? await Task.sleep(for: .seconds(0.075))
-                }
-            }
-            // Let the whole fall finish, then actually empty the grid.
-            try? await Task.sleep(for: .seconds(0.92))
-            haptics.cancel()
-            guard !Task.isCancelled else { isClearing = false; return }
-            grid = .empty
-            isClearing = false
-            presentClearedToast()
-        }
+        presentClearedToast()
     }
 
     /// The unified top toast, with an undo that restores the just-cleared grid.
@@ -408,8 +407,9 @@ struct ContentView: View {
         paintHaptic.impactOccurred()
         paintHaptic.prepare()
         withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 0.7)) {
-            grid = snapshot
+            grid = snapshot   // restores the drawing AND its size
         }
+        GridStore.shared.save(grid)   // keep the canvas (and size) we just put back
     }
 
     // MARK: Send
@@ -493,6 +493,29 @@ struct SquishyButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(Motion.crisp(0.14), value: configuration.isPressed)
+    }
+}
+
+/// A tiny `side × side` grid of dots — the live icon on the grid-size button, so the
+/// switch reads as "the canvas gets denser" rather than an opaque label.
+private struct MiniGrid: View {
+    let side: Int
+
+    var body: some View {
+        Canvas { context, size in
+            let gap = size.width / CGFloat(side)
+            let r = gap * 0.36
+            for row in 0..<side {
+                for col in 0..<side {
+                    let cx = gap * (CGFloat(col) + 0.5)
+                    let cy = gap * (CGFloat(row) + 0.5)
+                    context.fill(
+                        Path(ellipseIn: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)),
+                        with: .color(.white.opacity(0.9))
+                    )
+                }
+            }
+        }
     }
 }
 

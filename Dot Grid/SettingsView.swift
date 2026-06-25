@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var copyResetTask: Task<Void, Never>?
 
     @State private var showAddFriend = false
+    @State private var showNotifPriming = false
     @State private var showDeleteConfirm = false
     @State private var deleting = false
 
@@ -69,7 +70,9 @@ struct SettingsView: View {
         .font(DotFont.ui(17))
         .textCase(.lowercase)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showNotifPriming) { NotificationPrimingSheet() }
         .task { await appModel.loadOrMintCode() }
+        .task { await appModel.notifications.refresh() }   // live status, read fresh
     }
 
     // MARK: Profile
@@ -190,6 +193,8 @@ struct SettingsView: View {
 
     private var linksCard: some View {
         card {
+            notificationsRow
+            divider
             settingsRow("person.2.fill", "friends") { showAddFriend = true }
             divider
             NavigationLink { PrivacyPolicyView(url: privacyPolicyURL) } label: {
@@ -200,6 +205,49 @@ struct SettingsView: View {
             settingsRow("envelope.fill", "Support") {
                 if let url = URL(string: "mailto:\(supportEmail)") { UIApplication.shared.open(url) }
             }
+        }
+    }
+
+    // MARK: Notifications (status indicator that routes — not a local toggle)
+
+    private var notificationsRow: some View {
+        Button { notificationsTapped() } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "bell.fill")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7)).frame(width: 24)
+                Text("notifications").font(DotFont.ui(16, weight: .semibold)).foregroundStyle(.white)
+                Spacer()
+                notificationsTrailing
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SquishyButtonStyle())
+    }
+
+    @ViewBuilder
+    private var notificationsTrailing: some View {
+        switch appModel.notifications.status {
+        case .authorized, .provisional, .ephemeral:
+            HStack(spacing: 6) {
+                Circle().fill(Theme.mint).frame(width: 7, height: 7)
+                Text("on").font(DotFont.mono(12, bold: true)).foregroundStyle(Theme.mint)
+            }
+        case .denied:
+            HStack(spacing: 6) {
+                Text("off").font(DotFont.mono(12, bold: true)).foregroundStyle(.white.opacity(0.4))
+                Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(.white.opacity(0.3))
+            }
+        default:   // notDetermined
+            Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(.white.opacity(0.3))
+        }
+    }
+
+    private func notificationsTapped() {
+        if appModel.notifications.canPrime {
+            showNotifPriming = true               // notDetermined → our soft ask
+        } else {
+            appModel.notifications.openSystemSettings()   // denied (re-enable) or authorized (manage)
         }
     }
 

@@ -30,18 +30,49 @@ struct Cell: Codable, Equatable {
 }
 
 struct Grid: Codable, Equatable {
-    static let side = 8
+    /// Dots per side (8 or 12). Stored on the grid so a saved/sent canvas carries
+    /// its own shape — the recipient and widget render it at the right size.
+    var side: Int
 
     /// Row-major, exactly `side * side` entries. `nil` means an empty cell.
     var cells: [Cell?]
 
-    static let empty = Grid(cells: Array(repeating: nil, count: side * side))
+    /// The default canvas size for a fresh grid.
+    static let defaultSide = 8
+
+    init(side: Int = defaultSide, cells: [Cell?]) {
+        self.side = side
+        self.cells = cells
+    }
+
+    /// An empty grid of the given size.
+    static func empty(side: Int) -> Grid {
+        Grid(side: side, cells: Array(repeating: nil, count: side * side))
+    }
+
+    /// A default (8×8) empty grid — fallback / placeholder.
+    static let empty = Grid.empty(side: defaultSide)
 
     var isEmpty: Bool { cells.allSatisfy { $0 == nil } }
 
     subscript(row: Int, column: Int) -> Cell? {
-        get { cells[row * Self.side + column] }
-        set { cells[row * Self.side + column] = newValue }
+        get { cells[row * side + column] }
+        set { cells[row * side + column] = newValue }
+    }
+
+    // Tolerant decode: grids saved/sent before the size option carried no `side`,
+    // so infer it from the (square) cell count and fall back to the default.
+    enum CodingKeys: String, CodingKey { case side, cells }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let decoded = (try? c.decode([Cell?].self, forKey: .cells)) ?? []
+        cells = decoded
+        if let s = try? c.decode(Int.self, forKey: .side), s > 0 {
+            side = s
+        } else {
+            let inferred = Int(Double(decoded.count).squareRoot().rounded())
+            side = inferred > 0 ? inferred : Self.defaultSide
+        }
     }
 
     /// Heart pattern shown in the widget gallery before anything is sent.
@@ -56,7 +87,7 @@ struct Grid: Codable, Equatable {
             "...XX...",
             "........",
         ]
-        var grid = Grid.empty
+        var grid = Grid.empty(side: 8)
         for (row, line) in art.enumerated() {
             for (column, character) in line.enumerated() where character == "X" {
                 grid[row, column] = Cell(colorIndex: 0, size: .medium)
