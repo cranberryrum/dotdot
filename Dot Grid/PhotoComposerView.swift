@@ -61,13 +61,24 @@ struct PhotoComposerView: View {
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .gallery:
-                GalleryPicker { setImage($0) }.ignoresSafeArea()
+                // Reset the binding ourselves (the single dismissal path) and apply
+                // the image in the same transaction. Never lean on the picker to
+                // dismiss itself — see GalleryPicker for why that strands a layer.
+                GalleryPicker { picked in
+                    activeSheet = nil
+                    if let picked { setImage(picked) }
+                }
+                .ignoresSafeArea()
             case .recipients:
                 RecipientPickerView { recipients in finalizeSend(to: recipients) }
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { setImage($0) }.ignoresSafeArea()
+            CameraPicker { captured in
+                showCamera = false
+                if let captured { setImage(captured) }
+            }
+            .ignoresSafeArea()
         }
         .alert("camera access is off", isPresented: $showCameraDenied) {
             Button("open settings") {
@@ -275,7 +286,7 @@ struct PhotoComposerView: View {
             update(.location) { $0.text = name }
         } catch {
             remove(.location)
-            appModel.banner = "couldn't get your location"
+            appModel.showToast("couldn't get your location", icon: "location.slash.fill")
         }
     }
 
@@ -286,7 +297,7 @@ struct PhotoComposerView: View {
             update(.weather) { $0.icon = w.icon; $0.text = w.text }
         } catch {
             remove(.weather)
-            appModel.banner = "couldn't get the weather"
+            appModel.showToast("couldn't get the weather", icon: "cloud.slash.fill")
         }
     }
 

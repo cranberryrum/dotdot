@@ -29,7 +29,7 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await appModel.onForeground() } }
         }
-        .overlay(alignment: .top) { bannerOverlay }
+        .overlay(alignment: .top) { toastOverlay }
     }
 
     private var loading: some View {
@@ -40,19 +40,14 @@ struct RootView: View {
     }
 
     @ViewBuilder
-    private var bannerOverlay: some View {
-        if let text = appModel.banner {
-            Text(text.lowercased())
-                .font(DotFont.ui(15, weight: .bold))
-                .foregroundStyle(Theme.ink)
-                .padding(.horizontal, 18).padding(.vertical, 12)
-                .background(Capsule().fill(Theme.cream).shadow(color: .black.opacity(0.4), radius: 12, y: 4))
-                .padding(.top, 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .task(id: text) {
-                    try? await Task.sleep(for: .seconds(3))
-                    withAnimation { appModel.banner = nil }
-                }
+    private var toastOverlay: some View {
+        if let toast = appModel.toast {
+            ToastView(
+                toast: toast,
+                onAction: { appModel.runToastAction() },
+                onDismiss: { appModel.dismissToast() }
+            )
+            .id(toast.id)
         }
     }
 }

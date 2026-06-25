@@ -78,6 +78,17 @@ enum Motion {
     /// gentle settle for selections / toggles.
     static let settle = Animation.snappy(duration: 0.22)
 
+    /// Strong ease-out — starts fast, settles soft (cubic-bezier(0.23,1,0.32,1)).
+    /// The built-in `.easeOut` is limp; this is the curve to reach for on presses
+    /// and quick enter/exits where a spring would be overkill.
+    static func crisp(_ duration: Double = 0.18) -> Animation {
+        .timingCurve(0.23, 1, 0.32, 1, duration: duration)
+    }
+
+    /// Transient surfaces (banner, inline status text) easing on and off — a soft
+    /// spring so they arrive and leave with intent rather than the limp default.
+    static let surface = Animation.spring(response: 0.42, dampingFraction: 0.82)
+
     static func place(reduceMotion: Bool) -> Animation { reduceMotion ? reduced : dotpop }
 }
 

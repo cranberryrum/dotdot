@@ -38,8 +38,45 @@ final class AppModel {
     private(set) var inviteCode: String?
     private(set) var inviteCodeExpiresAt: Date?
 
-    /// Transient message surfaced as a banner (e.g. pairing results).
-    var banner: String?
+    /// True when a friend has sent a dotdot the user hasn't opened the inbox to see.
+    /// Drives the wordmark shimmer. Cleared by `markInboxSeen()`.
+    private(set) var inboxHasUnread = false
+
+    /// Bumped on a warm app-open or a live arrival while unread, so the wordmark can
+    /// replay its shimmer for that event (the cold-launch case is driven by unread).
+    private(set) var inboxShimmerNonce = 0
+
+    /// A transient top toast. Every transient message in the app goes through
+    /// `showToast` so they're all consistent: top, swipe-to-dismiss, same motion.
+    struct Toast: Identifiable, Equatable {
+        let id: UUID
+        var message: String
+        var icon: String?           // SF Symbol
+        var actionTitle: String?    // e.g. "undo"
+        var duration: TimeInterval
+        static func == (lhs: Toast, rhs: Toast) -> Bool { lhs.id == rhs.id }
+    }
+
+    private(set) var toast: Toast?
+    private var toastAction: (() -> Void)?
+
+    /// Show a toast. `action`/`actionTitle` add a trailing button (e.g. undo). The
+    /// ToastView owns timing + dismissal animation; this just sets the state.
+    func showToast(_ message: String, icon: String? = nil, actionTitle: String? = nil,
+                   duration: TimeInterval = 3, action: (() -> Void)? = nil) {
+        toastAction = actionTitle == nil ? nil : action
+        toast = Toast(id: UUID(), message: message, icon: icon,
+                      actionTitle: actionTitle, duration: duration)
+    }
+
+    /// Run the toast's action button (the view handles its own dismissal after).
+    func runToastAction() { toastAction?() }
+
+    /// Clear the toast once it has animated off-screen.
+    func dismissToast() {
+        toast = nil
+        toastAction = nil
+    }
 
     /// Last non-fatal CloudKit error, surfaced in the debug panel.
     private(set) var lastError: String?
@@ -73,6 +110,7 @@ final class AppModel {
         profile = GridStore.shared.loadProfile()
         outbox = GridStore.shared.loadOutbox()
         lastRecipientIDs = UserDefaults.standard.stringArray(forKey: "lastRecipients") ?? []
+        inboxHasUnread = computeInboxUnread()   // from cache, so the cold launch knows immediately
     }
 
     // MARK: - Lifecycle
@@ -104,6 +142,8 @@ final class AppModel {
             outbox = []
             UserDefaults.standard.removeObject(forKey: "lastRecipients")
             UserDefaults.standard.removeObject(forKey: "lastDrawingFetch")
+            UserDefaults.standard.removeObject(forKey: Self.inboxSeenKey)
+            inboxHasUnread = false
             clearInviteCode()
             WidgetCenter.shared.reloadAllTimelines()
         }
@@ -140,6 +180,7 @@ final class AppModel {
             await refreshFriends()   // pick up friends added by the other party
             await pullIncoming()
             await flushOutbox()
+            if inboxHasUnread { inboxShimmerNonce &+= 1 }   // warm open with unread → shimmer
         } else if case .available = account, profile == nil {
             await bootstrap()
         } else {
@@ -158,7 +199,11 @@ final class AppModel {
         guard case let .available(userID) = account else { return }
         await refreshFriends()   // a push may mean a new friendship, not just a drawing
         let count = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
-        if count > 0 { WidgetCenter.shared.reloadAllTimelines() }
+        refreshInboxUnread()
+        if count > 0 {
+            WidgetCenter.shared.reloadAllTimelines()
+            if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
+        }
     }
 
     // MARK: - Onboarding
@@ -195,7 +240,7 @@ final class AppModel {
 
         GridStore.shared.clearSharedState()
         let defaults = UserDefaults.standard
-        for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients", "dotdotDeviceID"] {
+        for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients", "dotdotDeviceID", Self.inboxSeenKey] {
             defaults.removeObject(forKey: key)
         }
         clearInviteCode()
@@ -203,6 +248,7 @@ final class AppModel {
         friends = []
         outbox = []
         lastRecipientIDs = []
+        inboxHasUnread = false
         lastError = nil
         WidgetCenter.shared.reloadAllTimelines()
         phase = .onboarding
@@ -324,6 +370,15 @@ final class AppModel {
             echo = .doodle(data, senderID: "", senderName: name, token: token, sentAt: now)
         }
         GridStore.shared.saveLocalEcho(echo)
+
+        // Record it in the inbox's "sent" feed. Resolve recipients to friends for
+        // their token/name; an unknown id (rare) falls back to a placeholder. An
+        // empty list means a local-only send (no friends picked).
+        let recipients: [FriendInfo] = recipientIDs.map { id in
+            friends.first { $0.id == id } ?? FriendInfo(id: id, name: "friend", token: .placeholder)
+        }
+        GridStore.shared.appendSent(SentMessage(id: UUID().uuidString, drawing: echo, recipients: recipients))
+
         WidgetCenter.shared.reloadAllTimelines()
 
         guard let profile, !recipientIDs.isEmpty else { return }   // local-only send
@@ -374,6 +429,26 @@ final class AppModel {
         GridStore.shared.saveOutbox(outbox)
     }
 
+    // MARK: - Inbox unread / shimmer
+
+    private static let inboxSeenKey = "inboxLastSeenAt"
+
+    /// A friend's dotdot is unread if it arrived after the last time the inbox was
+    /// opened. Sent dotdots and your own echoes never count.
+    private func computeInboxUnread() -> Bool {
+        let seen = (UserDefaults.standard.object(forKey: Self.inboxSeenKey) as? Date) ?? .distantPast
+        let newest = GridStore.shared.latestReceivedAt() ?? .distantPast
+        return newest > seen
+    }
+
+    private func refreshInboxUnread() { inboxHasUnread = computeInboxUnread() }
+
+    /// Opening the inbox marks everything seen and stops the shimmer.
+    func markInboxSeen() {
+        UserDefaults.standard.set(Date(), forKey: Self.inboxSeenKey)
+        inboxHasUnread = false
+    }
+
     // MARK: - Helpers
 
     private func pullIncoming() async {
@@ -385,6 +460,7 @@ final class AppModel {
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }
+        refreshInboxUnread()
     }
 
     private func participantID(for userID: String) -> String {

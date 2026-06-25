@@ -46,6 +46,10 @@ enum MessageKind: String, Codable { case dots, photo, doodle }
 enum WidgetMetrics {
     /// systemLarge is close to square; a square frame center-crops gracefully.
     static let aspect: CGFloat = 1.0
+    /// systemLarge is a touch taller than wide (≈0.95 across iPhones). Doodles are
+    /// drawn AND baked at this ratio so the canvas matches the widget exactly — the
+    /// doodle fills it end-to-end with no crop (no square-in-tall-frame letterbox).
+    static let doodleAspect: CGFloat = 338.0 / 354.0   // width : height
     /// Roughly systemLarge points × 3. The widget must never load more than this.
     static let targetPixels: CGFloat = 1100
 }
@@ -102,6 +106,17 @@ struct DisplayDrawing: Codable, Equatable {
         token = (try? c.decode(IdentityToken.self, forKey: .token)) ?? .placeholder
         sentAt = (try? c.decode(Date.self, forKey: .sentAt)) ?? Date()
     }
+}
+
+/// A dotdot you sent, kept for the inbox's "sent" feed. Reuses `DisplayDrawing` for
+/// the payload (its `senderID` is empty — it's yours) and records who it went to.
+/// `recipients` is empty for a local-only send (no friends picked).
+struct SentMessage: Codable, Equatable, Identifiable {
+    var id: String
+    var drawing: DisplayDrawing
+    var recipients: [FriendInfo]
+
+    var sentAt: Date { drawing.sentAt }
 }
 
 /// A send that still needs to reach CloudKit (offline / retrying). Persisted so a

@@ -11,9 +11,14 @@ import SwiftUI
 import UIKit
 
 /// Gallery picker. Uses PHPicker, so it needs no photo-library permission.
+///
+/// Dismissal is driven by the caller's binding via `onComplete` (nil = cancelled),
+/// NOT by `@Environment(\.dismiss)`. The coordinator captures a snapshot of this
+/// struct at creation, and a captured dismiss action goes stale — calling it is a
+/// no-op, so the presenting sheet's binding never resets and SwiftUI leaves an
+/// invisible presentation layer that eats every touch on the screen behind it.
 struct GalleryPicker: UIViewControllerRepresentable {
-    var onPick: (UIImage) -> Void
-    @Environment(\.dismiss) private var dismiss
+    var onComplete: (UIImage?) -> Void
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration()
@@ -33,21 +38,25 @@ struct GalleryPicker: UIViewControllerRepresentable {
         init(_ parent: GalleryPicker) { self.parent = parent }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            parent.dismiss()
             guard let provider = results.first?.itemProvider,
-                  provider.canLoadObject(ofClass: UIImage.self) else { return }
+                  provider.canLoadObject(ofClass: UIImage.self) else {
+                parent.onComplete(nil)   // cancelled or nothing usable → still dismiss
+                return
+            }
             provider.loadObject(ofClass: UIImage.self) { object, _ in
-                guard let image = object as? UIImage else { return }
-                DispatchQueue.main.async { self.parent.onPick(image) }
+                DispatchQueue.main.async { self.parent.onComplete(object as? UIImage) }
             }
         }
     }
 }
 
 /// Camera capture. Requires camera permission; only present when available.
+///
+/// Like `GalleryPicker`, dismissal is driven by the caller's binding via
+/// `onComplete` (nil = cancelled), not by the coordinator's stale captured
+/// `@Environment(\.dismiss)`.
 struct CameraPicker: UIViewControllerRepresentable {
-    var onCapture: (UIImage) -> Void
-    @Environment(\.dismiss) private var dismiss
+    var onComplete: (UIImage?) -> Void
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
         let picker = UIImagePickerController()
@@ -66,14 +75,11 @@ struct CameraPicker: UIViewControllerRepresentable {
 
         func imagePickerController(_ picker: UIImagePickerController,
                                    didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            parent.dismiss()
-            if let image = info[.originalImage] as? UIImage {
-                parent.onCapture(image)
-            }
+            parent.onComplete(info[.originalImage] as? UIImage)
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.dismiss()
+            parent.onComplete(nil)
         }
     }
 

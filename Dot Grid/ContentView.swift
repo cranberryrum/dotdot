@@ -26,8 +26,6 @@ struct ContentView: View {
     @State private var lastSentGrid: Grid?
 
     @State private var clearedSnapshot: Grid?
-    @State private var showClearedToast = false
-    @State private var toastDismissTask: Task<Void, Never>?
 
     @State private var fallTrigger = 0
     @State private var isClearing = false
@@ -70,18 +68,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
-        }
-        .overlay(alignment: .bottom) {
-            if showClearedToast {
-                clearedToast
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 92)
-                    .transition(
-                        reduceMotion
-                            ? .opacity
-                            : .move(edge: .bottom).combined(with: .opacity)
-                    )
-            }
         }
         .onAppear {
             paintHaptic.prepare()
@@ -363,39 +349,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Clear + undo toast
-
-    private var clearedToast: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(.white.opacity(0.6))
-            Text("poof! grid cleared")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-            Spacer(minLength: 8)
-            Button {
-                undoClear()
-            } label: {
-                Text("undo")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.black.opacity(0.85))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(.white))
-            }
-            .buttonStyle(SquishyButtonStyle())
-        }
-        .padding(.leading, 18)
-        .padding(.trailing, 8)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(red: 0.16, green: 0.16, blue: 0.20))
-                .shadow(color: .black.opacity(0.45), radius: 20, x: 0, y: 8)
-        )
-    }
+    // MARK: Clear + undo
 
     private func clearGrid() {
         guard !grid.isEmpty, !isClearing else { return }
@@ -405,7 +359,7 @@ struct ContentView: View {
             clearHaptic.impactOccurred()
             clearHaptic.prepare()
             grid = .empty
-            presentToast()
+            presentClearedToast()
             return
         }
 
@@ -438,28 +392,15 @@ struct ContentView: View {
             guard !Task.isCancelled else { isClearing = false; return }
             grid = .empty
             isClearing = false
-            presentToast()
+            presentClearedToast()
         }
     }
 
-    private func presentToast() {
-        toastDismissTask?.cancel()
-        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.82)) {
-            showClearedToast = true
+    /// The unified top toast, with an undo that restores the just-cleared grid.
+    private func presentClearedToast() {
+        appModel.showToast("poof! grid cleared", icon: "sparkles", actionTitle: "undo", duration: 4) {
+            undoClear()
         }
-        toastDismissTask = Task {
-            try? await Task.sleep(for: .seconds(4))
-            guard !Task.isCancelled else { return }
-            dismissToast()
-        }
-    }
-
-    private func dismissToast() {
-        toastDismissTask?.cancel()
-        withAnimation(.easeOut(duration: 0.25)) {
-            showClearedToast = false
-        }
-        clearedSnapshot = nil
     }
 
     private func undoClear() {
@@ -469,7 +410,6 @@ struct ContentView: View {
         withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 0.7)) {
             grid = snapshot
         }
-        dismissToast()
     }
 
     // MARK: Send
@@ -552,7 +492,7 @@ struct SquishyButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(Motion.crisp(0.14), value: configuration.isPressed)
     }
 }
 

@@ -11,14 +11,21 @@ import SwiftUI
 
 enum ComposeMode: String { case dots, photo, doodle }
 
+/// The one sheet that can be up over the composer at a time. A single `.sheet(item:)`
+/// avoids the multiple-`.sheet`-on-one-view presentation glitches.
+private enum ActiveSheet: Int, Identifiable {
+    case inbox, addFriend, settings, debug
+    var id: Int { rawValue }
+}
+
 struct ComposerView: View {
     @Environment(AppModel.self) private var appModel
 
     @AppStorage("composeMode") private var modeRaw = ComposeMode.dots.rawValue
     @AppStorage("accentColorIndex") private var accentIndex = 0   // drives the wordmark tint
-    @State private var showAddFriend = false
-    @State private var showDebug = false
-    @State private var showSettings = false
+    @State private var activeSheet: ActiveSheet?
+    @State private var shimmerPhase: CGFloat = 1   // 0 = off-screen left, 1 = off-screen right (rest)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var modePill
 
     private var mode: ComposeMode { ComposeMode(rawValue: modeRaw) ?? .dots }
@@ -46,9 +53,33 @@ struct ComposerView: View {
         .font(DotFont.ui(17))   // Hanken Grotesk is the default UI/body font
         .textCase(.lowercase)   // the whole app reads lowercase
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showAddFriend) { AddFriendView() }
-        .sheet(isPresented: $showDebug) { DebugView() }
-        .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .inbox:     InboxView()
+            case .addFriend: AddFriendView()
+            case .settings:  SettingsView()
+            case .debug:     DebugView()
+            }
+        }
+        .onAppear { playInboxShimmer() }                                   // cold launch
+        .onChange(of: appModel.inboxHasUnread) { _, unread in              // first unread arrives
+            if unread { playInboxShimmer() }
+        }
+        .onChange(of: appModel.inboxShimmerNonce) { _, _ in playInboxShimmer() }   // warm open / live arrival
+    }
+
+    /// Plays the wordmark sheen: two clean sweeps, then rest. Resetting the phase in
+    /// a follow-up tick guarantees the animation actually runs (a same-transaction
+    /// 1→0→1 would coalesce to no change), and the reset point is off-screen so
+    /// there's no flash. No-op when there's nothing unread or under Reduce Motion.
+    private func playInboxShimmer() {
+        guard appModel.inboxHasUnread, !reduceMotion else { return }
+        shimmerPhase = 0
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.95).repeatCount(2, autoreverses: false)) {
+                shimmerPhase = 1
+            }
+        }
     }
 
     // MARK: Top bar (shared across modes)
@@ -56,7 +87,8 @@ struct ComposerView: View {
     private var topBar: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                wordmark
+                Button { activeSheet = .inbox } label: { wordmark }
+                    .buttonStyle(SquishyButtonStyle())
                 Spacer()
                 if appModel.hasPendingSends {
                     HStack(spacing: 4) {
@@ -68,10 +100,10 @@ struct ComposerView: View {
                 }
                 if let me = appModel.profile {
                     TokenBadge(token: me.token, size: 32)
-                        .onTapGesture { showSettings = true }
-                        .onLongPressGesture { showDebug = true }
+                        .onTapGesture { activeSheet = .settings }
+                        .onLongPressGesture { activeSheet = .debug }
                 }
-                Button { showAddFriend = true } label: {
+                Button { activeSheet = .addFriend } label: {
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(.white.opacity(0.75))
@@ -86,18 +118,51 @@ struct ComposerView: View {
         }
     }
 
-    /// The DOTDOT wordmark — Hanken Grotesk italic, a heavier "dot" + a featherweight
-    /// "dot" (medium + extralight, tracking pulled in tight, per the Figma spec). Tinted
-    /// with whatever dot color is currently selected: a tiny easter egg, the logo follows
-    /// your picker.
-    private var wordmark: some View {
+    /// The DOTDOT wordmark glyphs — Hanken Grotesk italic, a heavier "dot" + a
+    /// featherweight "dot" (medium + extralight, tracking pulled in tight, per the
+    /// Figma spec). Kept as a `Text` so it serves as both the visible mark and the
+    /// shimmer's mask, guaranteeing the sheen clips exactly to the letters.
+    private var wordmarkText: Text {
         (
             Text("dot").font(.custom("HankenGrotesk-MediumItalic", fixedSize: 32))
             + Text("dot").font(.custom("HankenGrotesk-ExtraLightItalic", fixedSize: 32))
         )
         .tracking(-2.56)
-        .foregroundStyle(Palette.color(at: accentIndex))
-        .animation(.easeInOut(duration: 0.2), value: accentIndex)
+    }
+
+    /// Tinted with whatever dot color is currently selected (a tiny easter egg, the
+    /// logo follows your picker) and overlaid with the inbox sheen.
+    private var wordmark: some View {
+        wordmarkText
+            .foregroundStyle(Palette.color(at: accentIndex))
+            .overlay { inboxShimmer }
+            .animation(.easeInOut(duration: 0.2), value: accentIndex)
+    }
+
+    /// One bright sheen sweeping left→right across the wordmark to flag unread inbox
+    /// dotdots. Soft-edged so it never reads as a hard band, masked to the glyphs,
+    /// fully off-screen at rest, and only present when there's something unread (and
+    /// motion is allowed) — so it leaves no static artifact once the inbox is opened.
+    @ViewBuilder
+    private var inboxShimmer: some View {
+        if appModel.inboxHasUnread && !reduceMotion {
+            GeometryReader { proxy in
+                let w = proxy.size.width
+                let band = max(w * 0.42, 38)
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0),    location: 0),
+                        .init(color: .white.opacity(0.85), location: 0.5),
+                        .init(color: .white.opacity(0),    location: 1),
+                    ],
+                    startPoint: .leading, endPoint: .trailing
+                )
+                .frame(width: band)
+                .offset(x: -band + shimmerPhase * (w + band))
+            }
+            .mask(wordmarkText)
+            .allowsHitTesting(false)
+        }
     }
 
     private var iCloudBanner: some View {

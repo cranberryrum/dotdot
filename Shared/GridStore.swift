@@ -26,7 +26,14 @@ struct GridStore {
     private static let rosterKey = "friendRoster"
     private static let profileKey = "myProfile"
     private static let outboxKey = "outbox"
+    private static let receivedHistoryKey = "receivedHistory"   // inbox: dotdots from others
+    private static let sentHistoryKey = "sentHistory"           // inbox: dotdots you sent
+    private static let latestReceivedAtKey = "latestReceivedAt" // unread check (a Date, no blob)
     private static func friendDisplayKey(_ id: String) -> String { "display.\(id)" }
+
+    /// How many messages each inbox feed keeps. Bounds the App Group footprint —
+    /// these arrays hold image JPEGs for photo/doodle sends.
+    static let historyLimit = 60
 
     // MARK: - Composer canvas (last in-editor drawing)
 
@@ -45,15 +52,30 @@ struct GridStore {
         encode(drawing, forKey: Self.localEchoKey)
     }
 
-    /// A drawing received from a friend. Updates that friend's slot and, if it's
-    /// the newest, the "latest from anyone" slot the default widget shows.
+    /// A drawing received from a friend. Updates that friend's slot, appends to the
+    /// inbox's "received" feed, and, if it's the newest, the "latest from anyone"
+    /// slot the default widget shows. The single choke point for incoming drawings.
     func saveReceived(_ drawing: DisplayDrawing) {
         encode(drawing, forKey: Self.friendDisplayKey(drawing.senderID))
+        prependReceivedHistory(drawing)
+        // A lightweight high-water timestamp so the inbox can check for unread
+        // dotdots without decoding the stored image blobs.
+        let prevNewest = (defaults?.object(forKey: Self.latestReceivedAtKey) as? Date) ?? .distantPast
+        if drawing.sentAt > prevNewest {
+            defaults?.set(drawing.sentAt, forKey: Self.latestReceivedAtKey)
+        }
         if let current = decode(DisplayDrawing.self, forKey: Self.latestReceivedKey),
            current.sentAt >= drawing.sentAt {
             return
         }
         encode(drawing, forKey: Self.latestReceivedKey)
+    }
+
+    /// When the newest received dotdot arrived, or nil if none. A plain Date, so the
+    /// unread check stays cheap (no image decode). Forward-only: dotdots received
+    /// before this shipped don't count.
+    func latestReceivedAt() -> Date? {
+        defaults?.object(forKey: Self.latestReceivedAtKey) as? Date
     }
 
     /// What the default widget shows: latest from any friend, else your own echo.
@@ -65,6 +87,34 @@ struct GridStore {
     /// What a pinned per-friend widget shows.
     func displayDrawing(forFriend id: String) -> DisplayDrawing? {
         decode(DisplayDrawing.self, forKey: Self.friendDisplayKey(id))
+    }
+
+    // MARK: - Inbox history (received + sent feeds)
+
+    /// Newest-first list of dotdots received from friends.
+    func receivedHistory() -> [DisplayDrawing] {
+        decode([DisplayDrawing].self, forKey: Self.receivedHistoryKey) ?? []
+    }
+
+    private func prependReceivedHistory(_ drawing: DisplayDrawing) {
+        var items = receivedHistory()
+        items.insert(drawing, at: 0)
+        if items.count > Self.historyLimit { items = Array(items.prefix(Self.historyLimit)) }
+        encode(items, forKey: Self.receivedHistoryKey)
+    }
+
+    /// Newest-first list of dotdots you sent.
+    func sentHistory() -> [SentMessage] {
+        decode([SentMessage].self, forKey: Self.sentHistoryKey) ?? []
+    }
+
+    /// Record a send for the inbox's "sent" feed. Called once per send (online or
+    /// offline) from `AppModel.send`, so it captures every dot/photo/doodle.
+    func appendSent(_ message: SentMessage) {
+        var items = sentHistory()
+        items.insert(message, at: 0)
+        if items.count > Self.historyLimit { items = Array(items.prefix(Self.historyLimit)) }
+        encode(items, forKey: Self.sentHistoryKey)
     }
 
     // MARK: - Friend roster (drives the configurable widget's picker)
@@ -89,7 +139,8 @@ struct GridStore {
 
     func clearSharedState() {
         guard let defaults else { return }
-        for key in [Self.localEchoKey, Self.latestReceivedKey, Self.rosterKey, Self.profileKey, Self.outboxKey] {
+        for key in [Self.localEchoKey, Self.latestReceivedKey, Self.rosterKey, Self.profileKey,
+                    Self.outboxKey, Self.receivedHistoryKey, Self.sentHistoryKey, Self.latestReceivedAtKey] {
             defaults.removeObject(forKey: key)
         }
         for friend in roster() {

@@ -284,13 +284,13 @@ struct AddFriendView: View {
 
     private func connect() async {
         connecting = true
-        withAnimation { resultText = nil }
+        withAnimation(Motion.surface) { resultText = nil }
         do {
             try await appModel.addFriend(byCode: codeEntry)
-            withAnimation { resultText = "connected! 🎉"; resultIsError = false }
+            withAnimation(Motion.surface) { resultText = "connected! 🎉"; resultIsError = false }
             codeEntry = ""
         } catch {
-            withAnimation {
+            withAnimation(Motion.surface) {
                 resultText = (error as? PairingError)?.errorDescription ?? "couldn't connect."
                 resultIsError = true
             }
@@ -303,19 +303,19 @@ struct AddFriendView: View {
         copied = false
         let ok = await appModel.mintCode()
         if !ok {
-            withAnimation { resultText = "couldn't make a code."; resultIsError = true }
+            withAnimation(Motion.surface) { resultText = "couldn't make a code."; resultIsError = true }
         }
         refreshingCode = false
     }
 
     private func copy(_ code: String) {
         UIPasteboard.general.string = code
-        withAnimation { copied = true }
+        withAnimation(Motion.settle) { copied = true }
         copiedResetTask?.cancel()
         copiedResetTask = Task {
             try? await Task.sleep(for: .seconds(1.6))
             guard !Task.isCancelled else { return }
-            withAnimation { copied = false }
+            withAnimation(Motion.settle) { copied = false }
         }
     }
 
