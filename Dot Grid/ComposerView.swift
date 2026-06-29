@@ -40,7 +40,7 @@ struct ComposerView: View {
                     ContentView()
                         .opacity(mode == .dots ? 1 : 0)
                         .allowsHitTesting(mode == .dots)
-                    PhotoComposerView()
+                    PhotoComposerView(isActive: mode == .photo)
                         .opacity(mode == .photo ? 1 : 0)
                         .allowsHitTesting(mode == .photo)
                     DoodleComposerView()
@@ -121,11 +121,6 @@ struct ComposerView: View {
                     .font(DotFont.mono(12, bold: true))
                     .foregroundStyle(.white.opacity(0.55))
                 }
-                if let me = appModel.profile {
-                    TokenBadge(token: me.token, size: 32)
-                        .onTapGesture { activeSheet = .settings }
-                        .onLongPressGesture { activeSheet = .debug }
-                }
                 Button { activeSheet = .addFriend } label: {
                     Image(systemName: "person.badge.plus")
                         .font(.system(size: 17, weight: .bold))
@@ -134,6 +129,11 @@ struct ComposerView: View {
                         .background(Circle().fill(Palette.boardBackground))
                 }
                 .buttonStyle(SquishyButtonStyle())
+                if let me = appModel.profile {
+                    TokenBadge(token: me.token, size: 32)
+                        .onTapGesture { activeSheet = .settings }
+                        .onLongPressGesture { activeSheet = .debug }
+                }
             }
             if !appModel.isSignedIn {
                 iCloudBanner

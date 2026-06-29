@@ -103,7 +103,7 @@ struct DoodleComposerView: View {
             board
             controls
             Spacer(minLength: 0)
-            sendButton
+            sendArea
         }
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
@@ -126,13 +126,8 @@ struct DoodleComposerView: View {
             ZStack {
                 StrokeCanvas(strokes: liveStrokes, fill: fillColorIndex, size: size)
                 if strokes.isEmpty && currentPoints.isEmpty && fillColorIndex == nil {
-                    VStack(spacing: 10) {
-                        Image(systemName: "scribble.variable")
-                            .font(.system(size: 38, weight: .semibold))
-                        Text("draw something").font(DotFont.ui(16, weight: .bold))
-                    }
-                    .foregroundStyle(.white.opacity(0.3))
-                    .allowsHitTesting(false)
+                    ComposerEmptyState(systemImage: "scribble.variable", title: "draw something")
+                        .allowsHitTesting(false)
                 }
             }
             .frame(width: size.width, height: size.height)
@@ -142,10 +137,11 @@ struct DoodleComposerView: View {
             .onAppear { canvasSize = proxy.size }
             .onChange(of: proxy.size) { _, new in canvasSize = new }
         }
-        // Shaped like systemLarge and filled edge-to-edge, so the doodle maps 1:1
-        // onto the widget — end-to-end, no crop, no letterbox. The dark board is the
-        // permanent backdrop; flood-fill + strokes live in the erasable Canvas above.
-        .aspectRatio(WidgetMetrics.doodleAspect, contentMode: .fit)
+        // Square, matching the dots and photo boards so the canvas is the same size
+        // across all three tabs. The widget fits (never crops) the square doodle and
+        // its panel background matches, so the tiny letterbox is invisible. The dark
+        // board is the permanent backdrop; flood-fill + strokes live in the Canvas above.
+        .aspectRatio(1, contentMode: .fit)
         .background(RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Palette.boardBackground))
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
@@ -385,7 +381,25 @@ struct DoodleComposerView: View {
 
     // MARK: Send
 
-    private var sendDisabled: Bool { isEmptyCanvas || hasSent }
+    /// Nothing to send: an empty canvas, the same doodle we just sent, or (when you
+    /// have friends) nobody picked in the strip.
+    private var sendDisabled: Bool {
+        isEmptyCanvas || hasSent
+            || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
+    }
+
+    /// The send button, with the inline recipient strip stacked above it when that
+    /// flow is enabled (and you have friends). Otherwise just the button (sheet flow).
+    private var sendArea: some View {
+        VStack(spacing: 12) {
+            if SendFlow.useInlineRecipients && appModel.canPickRecipients {
+                RecipientStrip()
+                    .transition(.opacity)
+            }
+            sendButton
+        }
+        .animation(.easeInOut(duration: 0.2), value: appModel.canPickRecipients)
+    }
 
     private var sendButton: some View {
         Button { attemptSend() } label: {
@@ -416,7 +430,9 @@ struct DoodleComposerView: View {
     private func attemptSend() {
         guard let data = renderJPEG() else { return }
         pendingPhoto = data
-        if appModel.isSignedIn && !appModel.friends.isEmpty {
+        if SendFlow.useInlineRecipients {
+            finalizeSend(to: appModel.canPickRecipients ? appModel.resolvedRecipientIDs : [])
+        } else if appModel.isSignedIn && !appModel.friends.isEmpty {
             showRecipientPicker = true
         } else {
             finalizeSend(to: [])

@@ -2,9 +2,10 @@
 //  PhotoComposerView.swift
 //  Dot Grid
 //
-//  Photo mode (V1): pick or shoot a photo, frame it in a square crop window that
-//  matches the widget, and send. What sits inside the frame is exactly what gets
-//  sent — WYSIWYG with the widget.
+//  Photo mode: shoot (live camera) or pick a photo. It's shown center-cropped to the
+//  widget's square — no manual crop/zoom. Swiping the photo pages a little carousel of
+//  add-ons: plain → a draggable time pill → a draggable place pill (one at a time).
+//  Whatever's on the current page is baked into the sent JPEG — WYSIWYG with the widget.
 //
 
 import AVFoundation
@@ -12,16 +13,16 @@ import SwiftUI
 import UIKit
 
 struct PhotoComposerView: View {
+    /// The Photo tab is the visible one. Gates the live camera (and its permission
+    /// prompt + battery/indicator cost) so it only runs while you're on this tab.
+    var isActive: Bool = true
+
     @Environment(AppModel.self) private var appModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var image: UIImage?
-
-    // Committed framing; live gesture deltas layer on top.
-    @State private var zoom: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @GestureState private var pinch: CGFloat = 1
-    @GestureState private var drag: CGSize = .zero
+    @State private var camera = CameraController()
 
     // One sheet at a time. Two separate `.sheet` modifiers on the same view
     // corrupt SwiftUI's presentation state when the PHPicker dismisses itself,
@@ -31,32 +32,34 @@ struct PhotoComposerView: View {
         var id: Int { hashValue }
     }
     @State private var activeSheet: ActiveSheet?
-    @State private var showCamera = false
-    @State private var showCameraDenied = false
 
     @State private var pendingPhoto: Data?
     @State private var justSent = false
     @State private var sendResetTask: Task<Void, Never>?
-    // True once this exact framed shot has been sent; the button shows "sent" +
-    // disables until you pick a new photo or re-frame it.
+    // True once this exact shot has been sent; the button shows "sent" + disables
+    // until you pick a new photo or change the pill.
     @State private var hasSent = false
 
-    // Stickers baked into the sent photo. Positions are normalized to the frame.
-    @State private var stickers: [PhotoSticker] = []
+    // The pill carousel over the photo. `pillPage` 0 = plain photo; 1… indexes into
+    // `pillPages`. Only the current page's pill shows, draggable to any spot. Each pill
+    // is created lazily and remembers its own placement + text.
+    @State private var pillPage = 0
+    @State private var pills: [StickerKind: PhotoSticker] = [:]
     @State private var frameSide: CGFloat = 0
     @State private var locationProvider = LocationProvider()
 
-    private let maxZoom: CGFloat = 5
+    /// Carousel order after the plain photo. (Weather is parked — see StickerKind.carousel.)
+    private let pillPages = StickerKind.carousel
     private let stickerSpace = "stickerFrame"
     private let sendHaptic = UIImpactFeedbackGenerator(style: .medium)
+    private let pageHaptic = UIImpactFeedbackGenerator(style: .soft)
 
     var body: some View {
         VStack(spacing: 16) {
             frame
-            if image != nil { stickerTray }
             controls
             Spacer(minLength: 0)
-            sendButton
+            sendArea
         }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -73,24 +76,22 @@ struct PhotoComposerView: View {
                 RecipientPickerView { recipients in finalizeSend(to: recipients) }
             }
         }
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { captured in
-                showCamera = false
-                if let captured { setImage(captured) }
-            }
-            .ignoresSafeArea()
+        .onAppear { sendHaptic.prepare(); pageHaptic.prepare(); syncCamera() }
+        // The live camera runs only while the Photo tab is frontmost and there's no
+        // captured/picked shot to frame — and never while backgrounded.
+        .onChange(of: isActive) { _, _ in syncCamera() }
+        .onChange(of: scenePhase) { _, _ in syncCamera() }
+        .onChange(of: image) { _, _ in syncCamera() }
+    }
+
+    /// Start the live camera only when the tab is active, frontmost, and we're not
+    /// already framing a shot; otherwise stop it (frees the camera + its indicator).
+    private func syncCamera() {
+        if isActive && scenePhase == .active && image == nil {
+            camera.activate()
+        } else {
+            camera.deactivate()
         }
-        .alert("camera access is off", isPresented: $showCameraDenied) {
-            Button("open settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
-                }
-            }
-            Button("use gallery", role: .cancel) { activeSheet = .gallery }
-        } message: {
-            Text("enable camera in settings to take a photo, or pick one from your gallery.")
-        }
-        .onAppear { sendHaptic.prepare() }
     }
 
     // MARK: Framing window
@@ -103,11 +104,17 @@ struct PhotoComposerView: View {
                     .fill(Palette.boardBackground)
 
                 if let image {
-                    framedImage(image, side: side)
-                        .gesture(framingGesture(side: side))
-                    stickerLayer(side: side)
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: side, height: side)
+                        .clipped()
+                        .contentShape(Rectangle())
+                        .gesture(pageSwipe)
+                    pillOverlay(side: side)
+                    pageIndicator
                 } else {
-                    emptyPrompt
+                    cameraArea(side: side)
                 }
             }
             .frame(width: side, height: side)
@@ -119,76 +126,201 @@ struct PhotoComposerView: View {
         .aspectRatio(1, contentMode: .fit)
     }
 
-    /// Draggable sticker pills layered over the photo (fixed size, drag to position).
+    // MARK: Pill carousel (over the photo)
+
+    /// The pill kind on the current page (nil on the plain-photo page).
+    private var currentKind: StickerKind? {
+        (1...max(pillPages.count, 1)).contains(pillPage) ? pillPages[pillPage - 1] : nil
+    }
+    private var pageCount: Int { pillPages.count + 1 }   // + the plain-photo page
+
+    /// The one pill shown on the current page, draggable to any spot on the photo.
     @ViewBuilder
-    private func stickerLayer(side: CGFloat) -> some View {
-        ForEach($stickers) { $sticker in
-            StickerChip(icon: sticker.icon, text: sticker.text)
-                .position(x: sticker.position.x * side, y: sticker.position.y * side)
+    private func pillOverlay(side: CGFloat) -> some View {
+        if let kind = currentKind, let pill = pills[kind] {
+            StickerChip(icon: pill.icon, text: pill.text)
+                .position(x: pill.position.x * side, y: pill.position.y * side)
                 .gesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .named(stickerSpace))
                         .onChanged { value in
-                            sticker.position = CGPoint(
-                                x: min(max(value.location.x / side, 0.10), 0.90),
-                                y: min(max(value.location.y / side, 0.07), 0.93)
-                            )
+                            update(kind) {
+                                $0.position = CGPoint(
+                                    x: min(max(value.location.x / side, 0.10), 0.90),
+                                    y: min(max(value.location.y / side, 0.07), 0.93)
+                                )
+                            }
                             if hasSent { hasSent = false }   // moved → can send again
                         }
                 )
+                .id(kind)   // swapping kinds across pages triggers the transition
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
         }
     }
 
-    private func framedImage(_ image: UIImage, side: CGFloat) -> some View {
-        let base = baseFillSize(for: image, side: side)
-        let liveZoom = clampedZoom(zoom * pinch)
-        let dw = base.width * liveZoom
-        let dh = base.height * liveZoom
-        let raw = CGSize(width: offset.width + drag.width, height: offset.height + drag.height)
-        let clamped = clampOffset(raw, dispW: dw, dispH: dh, side: side)
-        return Image(uiImage: image)
-            .resizable()
-            .frame(width: dw, height: dh)
-            .offset(x: clamped.width, y: clamped.height)
-            .frame(width: side, height: side)
-            .clipped()
+    /// Page dots + a first-page hint, so the swipe-for-pills carousel is discoverable.
+    private var pageIndicator: some View {
+        VStack(spacing: 8) {
+            Spacer()
+            if pillPage == 0 {
+                Text("swipe for time · place")
+                    .font(DotFont.mono(11, bold: true)).tracking(1)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(.ultraThinMaterial))
+                    .transition(.opacity)
+            }
+            HStack(spacing: 7) {
+                ForEach(0..<pageCount, id: \.self) { page in
+                    Circle()
+                        .fill(.white.opacity(page == pillPage ? 0.95 : 0.35))
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .padding(.bottom, 14)
+        }
+        .allowsHitTesting(false)
     }
 
-    private var emptyPrompt: some View {
-        Button { activeSheet = .gallery } label: {
-            VStack(spacing: 12) {
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 40, weight: .semibold))
-                Text("Choose a photo")
-                    .font(DotFont.ui(16, weight: .bold))
+    /// A horizontal swipe on the photo (not on the pill) pages the carousel.
+    private var pageSwipe: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) * 1.2,
+                      abs(value.translation.width) > 44 else { return }
+                changePage(forward: value.translation.width < 0)   // swipe left → next
             }
-            .foregroundStyle(.white.opacity(0.5))
+    }
+
+    private func changePage(forward: Bool) {
+        let next = forward ? min(pillPage + 1, pageCount - 1) : max(pillPage - 1, 0)
+        guard next != pillPage else { return }
+        if next >= 1 { ensurePill(pillPages[next - 1]) }
+        withAnimation(.snappy(duration: 0.3)) { pillPage = next }
+        if hasSent { hasSent = false }
+        pageHaptic.impactOccurred(intensity: 0.6)
+        pageHaptic.prepare()
+    }
+
+    /// Create a pill the first time its page is shown (time = now; place resolves async).
+    private func ensurePill(_ kind: StickerKind) {
+        guard pills[kind] == nil else { return }
+        let pos = CGPoint(x: 0.5, y: 0.85)
+        switch kind {
+        case .time:
+            pills[.time] = PhotoSticker(kind: .time, icon: kind.defaultIcon,
+                                        text: Date.now.formatted(date: .omitted, time: .shortened), position: pos)
+        case .location:
+            pills[.location] = PhotoSticker(kind: .location, icon: kind.defaultIcon, text: "locating…", position: pos)
+            Task { await resolveLocation() }
+        case .weather:
+            pills[.weather] = PhotoSticker(kind: .weather, icon: kind.defaultIcon, text: "…", position: pos)
+            Task { await resolveWeather() }
+        }
+    }
+
+    // MARK: Live camera (the default empty state)
+
+    @ViewBuilder
+    private func cameraArea(side: CGFloat) -> some View {
+        if camera.showsPreview {
+            ZStack {
+                CameraPreview(session: camera.session)
+                    .frame(width: side, height: side)
+                cameraOverlay
+            }
+        } else {
+            cameraPlaceholder
+        }
+    }
+
+    /// In-frame controls: wide-angle (0.5×/1×) and flip up top, shutter at the bottom.
+    private var cameraOverlay: some View {
+        VStack {
+            HStack {
+                if camera.hasUltraWide { wideButton }
+                Spacer()
+                flipButton
+            }
+            Spacer()
+            shutterButton
+        }
+        .padding(16)
+    }
+
+    private var shutterButton: some View {
+        Button { captureTapped() } label: {
+            ZStack {
+                Circle().strokeBorder(.white.opacity(0.9), lineWidth: 4).frame(width: 66, height: 66)
+                Circle().fill(.white).frame(width: 54, height: 54)
+            }
         }
         .buttonStyle(SquishyButtonStyle())
     }
 
-    private func framingGesture(side: CGFloat) -> some Gesture {
-        let magnify = MagnifyGesture()
-            .updating($pinch) { value, state, _ in state = value.magnification }
-            .onEnded { value in
-                guard let image else { return }
-                let base = baseFillSize(for: image, side: side)
-                zoom = clampedZoom(zoom * value.magnification)
-                offset = clampOffset(offset, dispW: base.width * zoom, dispH: base.height * zoom, side: side)
-                if hasSent { withAnimation { hasSent = false } }   // re-framed → can send again
-            }
-        let pan = DragGesture()
-            .updating($drag) { value, state, _ in state = value.translation }
-            .onEnded { value in
-                guard let image else { return }
-                let base = baseFillSize(for: image, side: side)
-                let dw = base.width * zoom
-                let dh = base.height * zoom
-                let moved = CGSize(width: offset.width + value.translation.width,
-                                   height: offset.height + value.translation.height)
-                offset = clampOffset(moved, dispW: dw, dispH: dh, side: side)
-                if hasSent { withAnimation { hasSent = false } }   // re-framed → can send again
-            }
-        return magnify.simultaneously(with: pan)
+    private var flipButton: some View {
+        cameraControl { camera.flip() } content: {
+            Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
+                .font(.system(size: 17, weight: .bold))
+        }
+    }
+
+    /// Toggles the back camera between the 1× wide and 0.5× ultra-wide lens.
+    private var wideButton: some View {
+        cameraControl { withAnimation(Motion.settle) { camera.toggleWide() } } content: {
+            Text(camera.isWide ? "0.5×" : "1×")
+                .font(DotFont.heavy(14))
+                .contentTransition(.numericText())
+        }
+    }
+
+    private func cameraControl<Content: View>(action: @escaping () -> Void,
+                                               @ViewBuilder content: () -> Content) -> some View {
+        Button(action: action) {
+            content()
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                // A little frosted blur of the live scene behind each control, so the
+                // icons stay legible over a bright camera without a hard dark disc.
+                .background(Circle().fill(.ultraThinMaterial))
+        }
+        .buttonStyle(SquishyButtonStyle())
+    }
+
+    private func captureTapped() {
+        Task {
+            guard let shot = await camera.capturePhoto() else { return }
+            setImage(shot)
+        }
+    }
+
+    /// Shown until the camera is ready: asks for permission the first time, routes to
+    /// Settings when off, and falls back to the gallery when there's no camera at all.
+    private var cameraPlaceholder: some View {
+        Button { placeholderTapped() } label: {
+            ComposerEmptyState(systemImage: "camera.fill", title: placeholderTitle)
+        }
+        .buttonStyle(SquishyButtonStyle())
+    }
+
+    private var placeholderTitle: String {
+        if !camera.hasCamera { return "camera unavailable\nchoose from gallery" }
+        switch camera.status {
+        case .notDetermined:       return "enable camera"
+        case .denied, .restricted: return "camera is off\nenable it in settings"
+        default:                   return "starting camera…"
+        }
+    }
+
+    private func placeholderTapped() {
+        if !camera.hasCamera { activeSheet = .gallery; return }
+        switch camera.status {
+        case .notDetermined:
+            camera.activate()
+        case .denied, .restricted:
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+        default:
+            break
+        }
     }
 
     // MARK: Controls
@@ -196,7 +328,20 @@ struct PhotoComposerView: View {
     private var controls: some View {
         HStack(spacing: 12) {
             controlButton(title: "Gallery", systemImage: "photo") { activeSheet = .gallery }
-            controlButton(title: "Camera", systemImage: "camera") { openCamera() }
+            // The camera is live in the frame; once a shot is taken, offer a retake
+            // (clears it → back to the live camera).
+            if image != nil {
+                controlButton(title: "Retake", systemImage: "camera") { retake() }
+            }
+        }
+    }
+
+    private func retake() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            image = nil
+            pills = [:]
+            pillPage = 0
+            hasSent = false
         }
     }
 
@@ -215,69 +360,7 @@ struct PhotoComposerView: View {
         .buttonStyle(SquishyButtonStyle())
     }
 
-    private func openCamera() {
-        guard CameraPicker.isAvailable else { showCameraDenied = true; return }
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized, .notDetermined:
-            showCamera = true   // .notDetermined triggers the system prompt on present
-        default:
-            showCameraDenied = true
-        }
-    }
-
-    // MARK: Stickers
-
-    private var stickerTray: some View {
-        HStack(spacing: 10) {
-            ForEach(StickerKind.allCases) { kind in
-                let active = stickers.contains { $0.kind == kind }
-                Button { toggleSticker(kind) } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: kind.defaultIcon)
-                        Text(kind.trayLabel)
-                    }
-                    .font(DotFont.ui(14, weight: .bold))
-                    .foregroundStyle(active ? Theme.ink : .white.opacity(0.8))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(active ? Theme.cream : Palette.boardBackground)
-                    )
-                }
-                .buttonStyle(SquishyButtonStyle())
-            }
-        }
-    }
-
-    /// Tap a tray pill to add that sticker; tap again to remove it.
-    private func toggleSticker(_ kind: StickerKind) {
-        if stickers.contains(where: { $0.kind == kind }) {
-            withAnimation(.snappy(duration: 0.2)) { remove(kind) }
-            if hasSent { hasSent = false }
-            return
-        }
-        if hasSent { hasSent = false }
-        switch kind {
-        case .time:
-            addSticker(.time, icon: kind.defaultIcon,
-                       text: Date.now.formatted(date: .omitted, time: .shortened))
-        case .location:
-            addSticker(.location, icon: kind.defaultIcon, text: "locating…")
-            Task { await resolveLocation() }
-        case .weather:
-            addSticker(.weather, icon: kind.defaultIcon, text: "…")
-            Task { await resolveWeather() }
-        }
-    }
-
-    private func addSticker(_ kind: StickerKind, icon: String, text: String) {
-        // Stagger so multiple pills don't land exactly on top of each other.
-        let pos = CGPoint(x: 0.5, y: min(0.30 + CGFloat(stickers.count) * 0.13, 0.85))
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-            stickers.append(PhotoSticker(kind: kind, icon: icon, text: text, position: pos))
-        }
-    }
+    // MARK: Pill data (place / weather resolution)
 
     private func resolveLocation() async {
         do {
@@ -285,7 +368,7 @@ struct PhotoComposerView: View {
             let name = await locationProvider.placeName(for: loc)
             update(.location) { $0.text = name }
         } catch {
-            remove(.location)
+            update(.location) { $0.text = "location off" }
             appModel.showToast("couldn't get your location", icon: "location.slash.fill")
         }
     }
@@ -302,15 +385,29 @@ struct PhotoComposerView: View {
     }
 
     private func update(_ kind: StickerKind, _ change: (inout PhotoSticker) -> Void) {
-        guard let idx = stickers.firstIndex(where: { $0.kind == kind }) else { return }
-        change(&stickers[idx])
+        guard var pill = pills[kind] else { return }
+        change(&pill)
+        pills[kind] = pill
     }
 
     private func remove(_ kind: StickerKind) {
-        stickers.removeAll { $0.kind == kind }
+        pills[kind] = nil
     }
 
     // MARK: Send
+
+    /// The send button, with the inline recipient strip stacked above it when that
+    /// flow is enabled (and you have friends). Otherwise just the button (sheet flow).
+    private var sendArea: some View {
+        VStack(spacing: 12) {
+            if SendFlow.useInlineRecipients && appModel.canPickRecipients {
+                RecipientStrip()
+                    .transition(.opacity)
+            }
+            sendButton
+        }
+        .animation(.easeInOut(duration: 0.2), value: appModel.canPickRecipients)
+    }
 
     private var sendButton: some View {
         Button { attemptSend() } label: {
@@ -336,13 +433,19 @@ struct PhotoComposerView: View {
         .animation(.easeInOut(duration: 0.2), value: sendDisabled)
     }
 
-    /// Nothing to send: no photo yet, or this exact framed shot already went out.
-    private var sendDisabled: Bool { image == nil || hasSent }
+    /// Nothing to send: no photo yet, this exact framed shot already went out, or —
+    /// in the inline flow, when you have friends — nobody picked in the strip.
+    private var sendDisabled: Bool {
+        image == nil || hasSent
+            || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
+    }
 
     private func attemptSend() {
         guard let data = renderWidgetJPEG() else { return }
         pendingPhoto = data
-        if appModel.isSignedIn && !appModel.friends.isEmpty {
+        if SendFlow.useInlineRecipients {
+            finalizeSend(to: appModel.canPickRecipients ? appModel.resolvedRecipientIDs : [])
+        } else if appModel.isSignedIn && !appModel.friends.isEmpty {
             activeSheet = .recipients
         } else {
             finalizeSend(to: [])
@@ -369,14 +472,21 @@ struct PhotoComposerView: View {
         }
     }
 
-    /// The exact framed square → downscaled, widget-safe JPEG, with any stickers
-    /// baked in at the same positions you see on screen.
+    /// The current pill, if any — the only thing baked over the photo.
+    private var activeStickers: [PhotoSticker] {
+        guard let kind = currentKind, let pill = pills[kind] else { return [] }
+        return [pill]
+    }
+
+    /// The center-cropped square → downscaled, widget-safe JPEG, with the current pill
+    /// (if any) baked in at the same spot you see on screen.
     @MainActor
     private func renderWidgetJPEG() -> Data? {
-        guard let image, let rect = framedRect() else { return nil }
+        guard let image, let rect = centerSquareRect() else { return nil }
 
-        // No stickers → the original straight-crop fast path.
-        guard !stickers.isEmpty, frameSide > 0,
+        // Plain photo (no pill) → the straight center-crop fast path.
+        let active = activeStickers
+        guard !active.isEmpty, frameSide > 0,
               let base = ImageProcessing.croppedSquare(from: image, normalizedRect: rect)
         else { return ImageProcessing.widgetJPEG(from: image, normalizedRect: rect) }
 
@@ -388,7 +498,7 @@ struct PhotoComposerView: View {
                 .scaledToFill()
                 .frame(width: side, height: side)
                 .clipped()
-            ForEach(stickers) { s in
+            ForEach(active) { s in
                 StickerChip(icon: s.icon, text: s.text)
                     .position(x: s.position.x * side, y: s.position.y * side)
             }
@@ -404,44 +514,20 @@ struct PhotoComposerView: View {
         return baked.jpegData(compressionQuality: 0.8)
     }
 
-    /// The normalized square region currently framed (committed zoom/offset). Only
-    /// ratios matter, so any working `side` is fine.
-    private func framedRect() -> CGRect? {
+    /// The centered square crop of the image, in normalized image coordinates — the
+    /// region that aspect-fills the square frame (no manual crop, so it's just center).
+    private func centerSquareRect() -> CGRect? {
         guard let image else { return nil }
-        let side: CGFloat = 1000
-        let base = baseFillSize(for: image, side: side)
-        let dw = base.width * zoom
-        let dh = base.height * zoom
-        let clamped = clampOffset(offset, dispW: dw, dispH: dh, side: side)
-        let normX = (dw / 2 - clamped.width - side / 2) / dw
-        let normY = (dh / 2 - clamped.height - side / 2) / dh
-        return CGRect(x: normX, y: normY, width: side / dw, height: side / dh)
+        let w = image.size.width, h = image.size.height
+        guard w > 0, h > 0 else { return nil }
+        let s = min(w, h)
+        return CGRect(x: (w - s) / 2 / w, y: (h - s) / 2 / h, width: s / w, height: s / h)
     }
-
-    // MARK: Framing math
 
     private func setImage(_ new: UIImage) {
         image = new.normalizedUp()
-        zoom = 1
-        offset = .zero
-        stickers = []                       // start the new photo clean
+        pills = [:]       // start the new photo on the plain page
+        pillPage = 0
         withAnimation { hasSent = false }   // new photo → can send again
-    }
-
-    /// Aspect-fill size: the smallest size that fully covers the square frame.
-    private func baseFillSize(for image: UIImage, side: CGFloat) -> CGSize {
-        let a = image.size.height == 0 ? 1 : image.size.width / image.size.height
-        return a >= 1 ? CGSize(width: side * a, height: side)
-                      : CGSize(width: side, height: side / a)
-    }
-
-    private func clampedZoom(_ z: CGFloat) -> CGFloat { min(max(z, 1), maxZoom) }
-
-    /// Keep the image covering the frame — never let a gap show.
-    private func clampOffset(_ o: CGSize, dispW: CGFloat, dispH: CGFloat, side: CGFloat) -> CGSize {
-        let maxX = max(0, (dispW - side) / 2)
-        let maxY = max(0, (dispH - side) / 2)
-        return CGSize(width: min(max(o.width, -maxX), maxX),
-                      height: min(max(o.height, -maxY), maxY))
     }
 }

@@ -18,6 +18,11 @@ enum StickerKind: String, Identifiable, CaseIterable {
     case time, location, weather
     var id: String { rawValue }
 
+    /// Kinds shown in the photo pill carousel, in order (after the plain-photo page).
+    /// Weather is parked for now — all of its code (the `.weather` case, icon, and
+    /// `resolveWeather`) is kept intact; add `.weather` back here to re-enable it.
+    static let carousel: [StickerKind] = [.time, .location]
+
     /// Tray label + the icon shown before live data resolves.
     var trayLabel: String {
         switch self {

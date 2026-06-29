@@ -42,14 +42,12 @@ struct FriendInfo: Codable, Equatable, Identifiable, Hashable {
 /// never crop at the edges.
 enum MessageKind: String, Codable { case dots, photo, doodle }
 
-/// Geometry the photo frame and widget image share, so framing is WYSIWYG.
+/// Geometry the composer boards and the widget image share, so framing is WYSIWYG.
 enum WidgetMetrics {
-    /// systemLarge is close to square; a square frame center-crops gracefully.
+    /// All three composer boards (dots, photo, doodle) are square, so they're the
+    /// same size across tabs. systemLarge is close to square, so a square source
+    /// center-crops (photo, edge-to-edge) or fits (doodle, invisible letterbox).
     static let aspect: CGFloat = 1.0
-    /// systemLarge is a touch taller than wide (≈0.95 across iPhones). Doodles are
-    /// drawn AND baked at this ratio so the canvas matches the widget exactly — the
-    /// doodle fills it end-to-end with no crop (no square-in-tall-frame letterbox).
-    static let doodleAspect: CGFloat = 338.0 / 354.0   // width : height
     /// Roughly systemLarge points × 3. The widget must never load more than this.
     static let targetPixels: CGFloat = 1100
 }

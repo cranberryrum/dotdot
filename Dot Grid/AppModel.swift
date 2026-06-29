@@ -346,10 +346,57 @@ final class AppModel {
             let list = try await service.fetchFriends(myID: userID, myParticipantID: participantID(for: userID))
             friends = list
             GridStore.shared.saveRoster(list)
+            seedRecipientSelectionIfNeeded()   // ready before the inline strip appears
             if lastError?.hasPrefix("Friends fetch:") == true { lastError = nil }
         } catch {
             lastError = "Friends fetch: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Inline recipient selection (the strip above Send)
+
+    /// Who the next send goes to, picked inline above the send button and shared
+    /// across all three modes. Seeded once from the last people you sent to.
+    var selectedRecipientIDs: Set<String> = []
+    private var didSeedRecipients = false
+
+    /// Friends exist to pick from — the inline strip shows only then. With no
+    /// friends, sending falls back to a local-only echo (unchanged).
+    var canPickRecipients: Bool { isSignedIn && !friends.isEmpty }
+
+    /// The selection narrowed to people who are still friends (safe to send to).
+    var resolvedRecipientIDs: [String] {
+        let valid = Set(friends.map(\.id))
+        return Array(selectedRecipientIDs.intersection(valid))
+    }
+
+    /// Every current friend is selected — drives the "everyone" chip's state.
+    var isAllRecipientsSelected: Bool {
+        !friends.isEmpty && friends.allSatisfy { selectedRecipientIDs.contains($0.id) }
+    }
+
+    /// At least one valid recipient is picked (gates the send button).
+    var hasRecipientSelection: Bool { !resolvedRecipientIDs.isEmpty }
+
+    /// Seed the strip the first time it has friends to show: the last people you
+    /// sent to, or everyone if that's empty. Idempotent; no-ops with no friends.
+    func seedRecipientSelectionIfNeeded() {
+        guard !didSeedRecipients, !friends.isEmpty else { return }
+        didSeedRecipients = true
+        let valid = Set(friends.map(\.id))
+        let last = Set(lastRecipientIDs).intersection(valid)
+        selectedRecipientIDs = last.isEmpty ? valid : last
+    }
+
+    /// Toggle one friend in/out of the selection.
+    func toggleRecipient(_ id: String) {
+        if selectedRecipientIDs.contains(id) { selectedRecipientIDs.remove(id) }
+        else { selectedRecipientIDs.insert(id) }
+    }
+
+    /// "everyone": select the whole roster, or clear it if already all selected.
+    func toggleAllRecipients() {
+        selectedRecipientIDs = isAllRecipientsSelected ? [] : Set(friends.map(\.id))
     }
 
     // MARK: - Sending (local-first)

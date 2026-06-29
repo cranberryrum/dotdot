@@ -2,8 +2,8 @@
 //  PhotoPickers.swift
 //  Dot Grid
 //
-//  Thin SwiftUI wrappers around PHPicker (gallery, no library permission) and
-//  UIImagePickerController (camera, needs camera permission).
+//  Thin SwiftUI wrapper around PHPicker (gallery, no library permission). The camera
+//  is no longer a modal picker — it's the embedded live preview in Camera.swift.
 //
 
 import PhotosUI
@@ -47,43 +47,5 @@ struct GalleryPicker: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.onComplete(object as? UIImage) }
             }
         }
-    }
-}
-
-/// Camera capture. Requires camera permission; only present when available.
-///
-/// Like `GalleryPicker`, dismissal is driven by the caller's binding via
-/// `onComplete` (nil = cancelled), not by the coordinator's stale captured
-/// `@Environment(\.dismiss)`.
-struct CameraPicker: UIViewControllerRepresentable {
-    var onComplete: (UIImage?) -> Void
-
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.sourceType = .camera
-        picker.delegate = context.coordinator
-        return picker
-    }
-
-    func updateUIViewController(_ controller: UIImagePickerController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-        let parent: CameraPicker
-        init(_ parent: CameraPicker) { self.parent = parent }
-
-        func imagePickerController(_ picker: UIImagePickerController,
-                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            parent.onComplete(info[.originalImage] as? UIImage)
-        }
-
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.onComplete(nil)
-        }
-    }
-
-    static var isAvailable: Bool {
-        UIImagePickerController.isSourceTypeAvailable(.camera)
     }
 }

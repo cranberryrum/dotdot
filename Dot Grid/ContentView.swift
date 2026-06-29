@@ -59,7 +59,7 @@ struct ContentView: View {
                 controls
             }
             Spacer(minLength: 0)
-            sendButton
+            sendArea
         }
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
@@ -281,15 +281,17 @@ struct ContentView: View {
         .buttonStyle(SquishyButtonStyle())
     }
 
-    /// Toggles the canvas between 8×8 and 12×12. The icon is a live mini-grid that
-    /// densifies, so the switch reads at a glance and matches the other tool buttons.
+    /// Toggles the canvas between 8×8 and 12×12. A compact "8×" / "12×" label (the
+    /// number flips with a numeric transition) reads cleaner than a dense mini-grid.
     private var gridSizeButton: some View {
         Button { cycleGridSize() } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 15, style: .continuous)
                     .fill(Palette.boardBackground)
-                MiniGrid(side: grid.side)
-                    .frame(width: 26, height: 26)
+                Text("\(grid.side)×")
+                    .font(DotFont.heavy(18))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .contentTransition(.numericText())
                     .animation(.snappy(duration: 0.22), value: grid.side)
             }
             .frame(width: 52, height: 52)
@@ -414,10 +416,12 @@ struct ContentView: View {
 
     // MARK: Send
 
-    /// If signed in with friends, pick recipients; otherwise send a local-only
-    /// echo (foundation / solo) straight through.
+    /// Sheet flow: signed in with friends → pick recipients; otherwise send a
+    /// local-only echo. Inline flow (flagged): send to the strip's current selection.
     private func attemptSend() {
-        if appModel.isSignedIn && !appModel.friends.isEmpty {
+        if SendFlow.useInlineRecipients {
+            finalizeSend(to: appModel.canPickRecipients ? appModel.resolvedRecipientIDs : [])
+        } else if appModel.isSignedIn && !appModel.friends.isEmpty {
             showRecipientPicker = true
         } else {
             finalizeSend(to: [])
@@ -453,8 +457,25 @@ struct ContentView: View {
 
     /// The current drawing has already been shipped, unchanged since.
     private var isSent: Bool { !grid.isEmpty && grid == lastSentGrid }
-    /// Nothing to send: an empty canvas, or the same thing we just sent.
-    private var sendDisabled: Bool { grid.isEmpty || isSent }
+    /// Nothing to send: an empty canvas, the same thing we just sent, or — in the
+    /// inline flow, when you have friends — nobody picked in the strip.
+    private var sendDisabled: Bool {
+        grid.isEmpty || isSent
+            || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
+    }
+
+    /// The send button, with the inline recipient strip stacked above it when that
+    /// flow is enabled (and you have friends). Otherwise just the button (sheet flow).
+    private var sendArea: some View {
+        VStack(spacing: 12) {
+            if SendFlow.useInlineRecipients && appModel.canPickRecipients {
+                RecipientStrip()
+                    .transition(.opacity)
+            }
+            sendButton
+        }
+        .animation(.easeInOut(duration: 0.2), value: appModel.canPickRecipients)
+    }
 
     private var sendButton: some View {
         Button {
@@ -493,29 +514,6 @@ struct SquishyButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(Motion.crisp(0.14), value: configuration.isPressed)
-    }
-}
-
-/// A tiny `side × side` grid of dots — the live icon on the grid-size button, so the
-/// switch reads as "the canvas gets denser" rather than an opaque label.
-private struct MiniGrid: View {
-    let side: Int
-
-    var body: some View {
-        Canvas { context, size in
-            let gap = size.width / CGFloat(side)
-            let r = gap * 0.36
-            for row in 0..<side {
-                for col in 0..<side {
-                    let cx = gap * (CGFloat(col) + 0.5)
-                    let cy = gap * (CGFloat(row) + 0.5)
-                    context.fill(
-                        Path(ellipseIn: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)),
-                        with: .color(.white.opacity(0.9))
-                    )
-                }
-            }
-        }
     }
 }
 

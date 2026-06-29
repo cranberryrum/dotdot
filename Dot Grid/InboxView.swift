@@ -4,7 +4,8 @@
 //
 //  The inbox bottom sheet, opened by tapping the "dotdot" wordmark. A sticky,
 //  page-level tab switches between two single-column feeds — dotdots received from
-//  friends and dotdots you've sent. Tapping any one enlarges it to a peek.
+//  friends and dotdots you've sent. Tapping a received one enlarges it to a
+//  peek; the sent feed just scrolls (no peek).
 //
 //  History is read from the App Group (GridStore): `saveReceived` appends to the
 //  received feed, `AppModel.send` appends to the sent feed. Both are capped, so the
@@ -196,9 +197,11 @@ struct InboxView: View {
             } else {
                 LazyVStack(spacing: 24) {
                     ForEach(entries) { entry in
-                        FeedCard(entry: entry) {
-                            withAnimation(Motion.pop) { peek = entry }
-                        }
+                        // Received cards tap to peek; sent cards don't expand — the
+                        // sent feed is scroll-only.
+                        FeedCard(entry: entry, onTap: tab == .received
+                                 ? { withAnimation(Motion.pop) { peek = entry } }
+                                 : nil)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -263,7 +266,8 @@ struct InboxView: View {
 
 private struct FeedCard: View {
     let entry: InboxEntry
-    let onTap: () -> Void
+    /// Tap-to-peek handler. `nil` (the sent feed) leaves the card non-interactive.
+    var onTap: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -289,8 +293,20 @@ private struct FeedCard: View {
             }
             .padding(.horizontal, 4)
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
+        .onTapIfPresent(onTap)
+    }
+}
+
+private extension View {
+    /// Attaches a tap handler only when one is provided; otherwise the view stays
+    /// non-interactive (no tap target), so the sent feed has no dead "expand" zone.
+    @ViewBuilder
+    func onTapIfPresent(_ action: (() -> Void)?) -> some View {
+        if let action {
+            contentShape(Rectangle()).onTapGesture(perform: action)
+        } else {
+            self
+        }
     }
 }
 
