@@ -36,6 +36,14 @@ final class CameraController {
     @ObservationIgnored private let sessionQueue = DispatchQueue(label: "dotdot.camera.session")
     @ObservationIgnored private var captureDelegate: PhotoCaptureDelegate?
 
+    // Orientation: a RotationCoordinator reports the correct (and often different)
+    // rotation angles for the live preview vs. the captured photo, so shots come out
+    // upright instead of sideways. Replaces the old hardcoded 90°.
+    @ObservationIgnored private var currentDevice: AVCaptureDevice?
+    @ObservationIgnored private weak var previewLayer: AVCaptureVideoPreviewLayer?
+    @ObservationIgnored private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    @ObservationIgnored private var rotationObservation: NSKeyValueObservation?
+
     var isAuthorized: Bool { status == .authorized }
     /// Show the live preview only once we have a configured, usable camera.
     var showsPreview: Bool { isAuthorized && isConfigured && hasCamera }
@@ -96,12 +104,13 @@ final class CameraController {
         guard isConfigured else { return nil }
         let output = self.photoOutput
         let mirror = position == .front
+        let angle = rotationCoordinator?.videoRotationAngleForHorizonLevelCapture ?? 90
         return await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
             let delegate = PhotoCaptureDelegate { image in continuation.resume(returning: image) }
             self.captureDelegate = delegate   // keep alive until the callback fires
             sessionQueue.async {
                 if let connection = output.connection(with: .video) {
-                    if connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
+                    if connection.isVideoRotationAngleSupported(angle) { connection.videoRotationAngle = angle }
                     if connection.isVideoMirroringSupported { connection.isVideoMirrored = mirror }
                 }
                 output.capturePhoto(with: AVCapturePhotoSettings(), delegate: delegate)
@@ -118,7 +127,7 @@ final class CameraController {
         let output = self.photoOutput
         let position = self.position
         let wantWide = self.isWide
-        let result: (hasCamera: Bool, ultra: Bool) = await withCheckedContinuation { continuation in
+        let result: (hasCamera: Bool, ultra: Bool, device: AVCaptureDevice?) = await withCheckedContinuation { continuation in
             sessionQueue.async {
                 session.beginConfiguration()
                 session.sessionPreset = .photo
@@ -127,19 +136,48 @@ final class CameraController {
                 guard let device = Self.device(position: position, wide: wantWide),
                       let input = try? AVCaptureDeviceInput(device: device) else {
                     session.commitConfiguration()
-                    continuation.resume(returning: (false, false))
+                    continuation.resume(returning: (false, false, nil))
                     return
                 }
                 if session.canAddInput(input) { session.addInput(input) }
                 if !session.outputs.contains(output), session.canAddOutput(output) { session.addOutput(output) }
                 session.commitConfiguration()
                 if !session.isRunning { session.startRunning() }
-                continuation.resume(returning: (true, Self.ultraWideAvailable(position: position)))
+                continuation.resume(returning: (true, Self.ultraWideAvailable(position: position), device))
             }
         }
         hasCamera = result.hasCamera
         hasUltraWide = result.ultra
         isConfigured = result.hasCamera
+        currentDevice = result.device
+        if let device = result.device { setUpRotation(for: device) }
+    }
+
+    // MARK: Rotation (orientation-correct preview + capture)
+
+    /// CameraPreview hands us its layer so the coordinator can drive preview rotation.
+    func attachPreviewLayer(_ layer: AVCaptureVideoPreviewLayer) {
+        previewLayer = layer
+        if let device = currentDevice { setUpRotation(for: device) }
+    }
+
+    /// Bind a RotationCoordinator to the active device + preview layer. It reports the
+    /// correct angles for the live preview and for the captured photo (which can differ),
+    /// so what you shoot comes out upright like the preview — no hardcoded rotation.
+    private func setUpRotation(for device: AVCaptureDevice) {
+        rotationCoordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+        applyPreviewRotation()
+        // Keep the preview level if the device rotates. KVO can fire off-main, so hop.
+        rotationObservation = rotationCoordinator?.observe(\.videoRotationAngleForHorizonLevelPreview) { [weak self] _, _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.applyPreviewRotation() } }
+        }
+    }
+
+    private func applyPreviewRotation() {
+        guard let angle = rotationCoordinator?.videoRotationAngleForHorizonLevelPreview,
+              let connection = previewLayer?.connection,
+              connection.isVideoRotationAngleSupported(angle) else { return }
+        connection.videoRotationAngle = angle
     }
 
     /// The wide-angle (1×) device for a position, or its ultra-wide (0.5×) sibling when
@@ -173,23 +211,20 @@ private final class PhotoCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegat
 }
 
 /// A live-preview view backed by `AVCaptureVideoPreviewLayer`, aspect-filled to its
-/// (square) frame and locked to portrait.
+/// (square) frame. Rotation is driven by the controller's RotationCoordinator.
 struct CameraPreview: UIViewRepresentable {
-    let session: AVCaptureSession
+    let camera: CameraController
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
-        view.previewLayer.session = session
+        view.previewLayer.session = camera.session
         view.previewLayer.videoGravity = .resizeAspectFill
+        camera.attachPreviewLayer(view.previewLayer)
         return view
     }
 
     func updateUIView(_ uiView: PreviewView, context: Context) {
-        uiView.previewLayer.session = session
-        if let connection = uiView.previewLayer.connection,
-           connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90   // portrait
-        }
+        uiView.previewLayer.session = camera.session
     }
 
     final class PreviewView: UIView {

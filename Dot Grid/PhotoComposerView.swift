@@ -48,8 +48,18 @@ struct PhotoComposerView: View {
     @State private var frameSide: CGFloat = 0
     @State private var locationProvider = LocationProvider()
 
+    // The doodle page (the last carousel page): freehand strokes drawn over the photo.
+    // Pen color is the shared app accent, so it follows whatever you last picked.
+    @AppStorage("accentColorIndex") private var penColorIndex = 0
+    @State private var doodleStrokes: [PhotoStroke] = []
+    @State private var currentStroke: [CGPoint] = []
+    @State private var isDrawing = false        // page-0 doodle tray settled open (draw mode)
+    @State private var dragHeight: CGFloat = 0   // live tray drag (negative = pulling up)
+    @State private var panelHeight: CGFloat = 160 // measured doodle-panel height (to hide it)
+
     /// Carousel order after the plain photo. (Weather is parked — see StickerKind.carousel.)
     private let pillPages = StickerKind.carousel
+    private let penWidthFraction: CGFloat = 0.02
     private let stickerSpace = "stickerFrame"
     private let sendHaptic = UIImpactFeedbackGenerator(style: .medium)
     private let pageHaptic = UIImpactFeedbackGenerator(style: .soft)
@@ -57,7 +67,7 @@ struct PhotoComposerView: View {
     var body: some View {
         VStack(spacing: 16) {
             frame
-            controls
+            if image != nil { pageDots }
             Spacer(minLength: 0)
             sendArea
         }
@@ -104,15 +114,11 @@ struct PhotoComposerView: View {
                     .fill(Palette.boardBackground)
 
                 if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: side, height: side)
-                        .clipped()
-                        .contentShape(Rectangle())
-                        .gesture(pageSwipe)
+                    photoImage(image, side: side)
+                    doodleOverlay(side: side)
                     pillOverlay(side: side)
-                    pageIndicator
+                    if pillPage == 0 && !isDrawing { doodlePullTab }
+                    doodleTray
                 } else {
                     cameraArea(side: side)
                 }
@@ -126,13 +132,209 @@ struct PhotoComposerView: View {
         .aspectRatio(1, contentMode: .fit)
     }
 
-    // MARK: Pill carousel (over the photo)
+    // MARK: Carousel (over the photo)
+    //
+    // Pages: 0 = first photo (the doodle lives here, in a pull-up tray) · 1…N = one
+    // pill each (time, place). Swipe horizontally to page; on page 0, swipe UP to doodle.
 
-    /// The pill kind on the current page (nil on the plain-photo page).
+    /// The pill kind on the current page (nil on the first / doodle page).
     private var currentKind: StickerKind? {
-        (1...max(pillPages.count, 1)).contains(pillPage) ? pillPages[pillPage - 1] : nil
+        (1...pillPages.count).contains(pillPage) ? pillPages[pillPage - 1] : nil
     }
-    private var pageCount: Int { pillPages.count + 1 }   // + the plain-photo page
+    private var pageCount: Int { pillPages.count + 1 }   // first photo + pills
+
+    /// The photo. On page 0 while drawing a drag draws; on page 0 otherwise a drag
+    /// pages horizontally or — swiped up — reveals the doodle tray; on pill pages it pages.
+    @ViewBuilder
+    private func photoImage(_ image: UIImage, side: CGFloat) -> some View {
+        let base = Image(uiImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: side, height: side)
+            .clipped()
+            .contentShape(Rectangle())
+        if pillPage == 0 && isDrawing {
+            base.gesture(drawGesture(side: side))
+        } else if pillPage == 0 {
+            base.gesture(page0Gesture)
+        } else {
+            base.gesture(pageSwipe)
+        }
+    }
+
+    /// The freehand strokes, shown on the first page (where the doodle lives) — both
+    /// while drawing and after, so the doodle persists when the tray is tucked away.
+    @ViewBuilder
+    private func doodleOverlay(side: CGFloat) -> some View {
+        if pillPage == 0 {
+            PhotoDoodleCanvas(strokes: doodleStrokes, live: currentStroke,
+                              liveColorIndex: penColorIndex, liveWidthFraction: penWidthFraction,
+                              size: CGSize(width: side, height: side))
+                .allowsHitTesting(false)   // input is the photo's drawGesture
+        }
+    }
+
+    private func drawGesture(side: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(stickerSpace))
+            .onChanged { value in
+                guard side > 0 else { return }
+                currentStroke.append(CGPoint(x: min(max(value.location.x / side, 0), 1),
+                                             y: min(max(value.location.y / side, 0), 1)))
+            }
+            .onEnded { _ in
+                guard !currentStroke.isEmpty else { return }
+                doodleStrokes.append(PhotoStroke(points: currentStroke, colorIndex: penColorIndex,
+                                                 widthFraction: penWidthFraction))
+                currentStroke = []
+                if hasSent { hasSent = false }
+            }
+    }
+
+    /// The doodle panel on page 0: the toolbar resting on a soft progressive blur that
+    /// fades up into the photo — no card, no grabber, edge-to-edge. It stays mounted (so
+    /// the blur never flashes through a transition) and slides in/out via an offset that
+    /// tracks the drag 1:1, settling spring-free on release.
+    @ViewBuilder
+    private var doodleTray: some View {
+        if pillPage == 0 {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                doodlePanel
+            }
+            .offset(y: trayTranslation)
+        }
+    }
+
+    private var doodlePanel: some View {
+        doodleToolbarRow
+            .padding(.top, 42)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity)
+            .background(progressiveBlur)
+            .background(                       // measure the panel so it tucks away exactly
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { panelHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, h in panelHeight = h }
+                }
+            )
+            .contentShape(Rectangle())
+            .gesture(panelDragGesture)
+    }
+
+    /// How far the panel is pushed down from open: 0 = open, `panelHeight` = tucked below
+    /// the frame (clipped away). Tracks the live drag, clamped to the panel's travel.
+    private var trayTranslation: CGFloat {
+        let base: CGFloat = isDrawing ? 0 : panelHeight
+        return min(max(base + dragHeight, 0), panelHeight)
+    }
+
+    /// Just a cute progressive blur behind the toolbar — no scrim/colour. UIKit-backed,
+    /// so it slides with the tray without flashing. The frame's clip shapes its corners.
+    private var progressiveBlur: some View {
+        ProgressiveBlur().allowsHitTesting(false)
+    }
+
+    private var doodleToolbarRow: some View {
+        HStack(spacing: 7) {
+            doodleTool(icon: "arrow.uturn.backward", enabled: !doodleStrokes.isEmpty) { undoDoodle() }
+            ForEach(Palette.entries.indices, id: \.self) { index in
+                Button { penColorIndex = index } label: {
+                    Circle()
+                        .fill(Palette.color(at: index))
+                        .frame(width: 20, height: 20)
+                        .overlay(Circle().strokeBorder(.white.opacity(penColorIndex == index ? 0.95 : 0), lineWidth: 2))
+                        .scaleEffect(penColorIndex == index ? 1 : 0.82)
+                }
+                .buttonStyle(SquishyButtonStyle())
+            }
+            doodleTool(icon: "trash.fill", enabled: !doodleStrokes.isEmpty) { clearDoodle() }
+        }
+        .animation(.snappy(duration: 0.18), value: penColorIndex)
+        .padding(.horizontal, 12)
+    }
+
+    /// A subtle grabber peeking at the bottom of page 0, hinting "swipe up to doodle".
+    private var doodlePullTab: some View {
+        VStack {
+            Spacer()
+            Capsule().fill(.white.opacity(0.4)).frame(width: 40, height: 5)
+                .padding(.bottom, 12)
+        }
+        .allowsHitTesting(false)   // the photo's swipe-up gesture does the reveal
+    }
+
+    /// Spring-free settle for the tray — a strong ease-out so it glides to rest without
+    /// overshoot (during the drag the panel tracks the finger 1:1, with no animation).
+    private var traySettle: Animation {
+        reduceMotion ? .easeOut(duration: 0.12) : Motion.crisp(0.3)
+    }
+
+    /// Page 0's idle drag. An upward, vertical drag pulls the doodle tray up live; a
+    /// horizontal one pages the carousel. On release the tray commits (distance OR a
+    /// flick) or eases back — no spring.
+    private var page0Gesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                let dx = value.translation.width, dy = value.translation.height
+                dragHeight = (dy < 0 && abs(dy) > abs(dx)) ? dy : 0   // follow upward pulls only
+            }
+            .onEnded { value in
+                let dx = value.translation.width, dy = value.translation.height
+                let flickUp = value.predictedEndTranslation.height < -120
+                if (dy < -50 || flickUp) && abs(dy) > abs(dx) {
+                    withAnimation(traySettle) { isDrawing = true; dragHeight = 0 }
+                    pageHaptic.impactOccurred(intensity: 0.6); pageHaptic.prepare()
+                } else if abs(dx) > 44 && abs(dx) > abs(dy) * 1.2 {
+                    dragHeight = 0
+                    goToPage(pillPage + (dx < 0 ? 1 : -1))
+                } else {
+                    withAnimation(traySettle) { dragHeight = 0 }   // not enough → ease back
+                }
+            }
+    }
+
+    /// A downward drag anywhere on the panel tucks the doodle away, tracking the finger
+    /// and committing on distance or a downward flick.
+    private var panelDragGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard isDrawing, value.translation.height > 0 else { return }
+                dragHeight = value.translation.height
+            }
+            .onEnded { value in
+                guard isDrawing else { return }
+                let commit = value.translation.height > 50 || value.predictedEndTranslation.height > 120
+                withAnimation(traySettle) {
+                    if commit { isDrawing = false }
+                    dragHeight = 0
+                }
+                if commit { pageHaptic.impactOccurred(intensity: 0.5); pageHaptic.prepare() }
+            }
+    }
+
+    private func doodleTool(icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white.opacity(enabled ? 0.9 : 0.3))
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(SquishyButtonStyle())
+        .disabled(!enabled)
+    }
+
+    private func undoDoodle() {
+        guard !doodleStrokes.isEmpty else { return }
+        withAnimation(.easeOut(duration: 0.12)) { _ = doodleStrokes.removeLast() }
+        if hasSent { hasSent = false }
+    }
+
+    private func clearDoodle() {
+        guard !doodleStrokes.isEmpty else { return }
+        withAnimation(.easeOut(duration: 0.18)) { doodleStrokes = [] }
+        if hasSent { hasSent = false }
+    }
 
     /// The one pill shown on the current page, draggable to any spot on the photo.
     @ViewBuilder
@@ -157,45 +359,39 @@ struct PhotoComposerView: View {
         }
     }
 
-    /// Page dots + a first-page hint, so the swipe-for-pills carousel is discoverable.
-    private var pageIndicator: some View {
-        VStack(spacing: 8) {
-            Spacer()
-            if pillPage == 0 {
-                Text("swipe for time · place")
-                    .font(DotFont.mono(11, bold: true)).tracking(1)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Capsule().fill(.ultraThinMaterial))
-                    .transition(.opacity)
-            }
-            HStack(spacing: 7) {
-                ForEach(0..<pageCount, id: \.self) { page in
+    /// The carousel page dots below the photo. Tappable, so any page is one tap away.
+    private var pageDots: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<pageCount, id: \.self) { page in
+                Button { goToPage(page) } label: {
                     Circle()
-                        .fill(.white.opacity(page == pillPage ? 0.95 : 0.35))
+                        .fill(.white.opacity(page == pillPage ? 0.85 : 0.25))
                         .frame(width: 6, height: 6)
+                        .padding(7)              // a comfortable tap target
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
-            .padding(.bottom, 14)
         }
-        .allowsHitTesting(false)
+        .animation(.snappy(duration: 0.2), value: pillPage)
     }
 
-    /// A horizontal swipe on the photo (not on the pill) pages the carousel.
+    /// A horizontal swipe on the photo (not on a pill) pages the carousel — used on the
+    /// pill pages (page 0 uses page0Gesture so it can also swipe up to doodle).
     private var pageSwipe: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { value in
                 guard abs(value.translation.width) > abs(value.translation.height) * 1.2,
                       abs(value.translation.width) > 44 else { return }
-                changePage(forward: value.translation.width < 0)   // swipe left → next
+                goToPage(pillPage + (value.translation.width < 0 ? 1 : -1))   // left → next
             }
     }
 
-    private func changePage(forward: Bool) {
-        let next = forward ? min(pillPage + 1, pageCount - 1) : max(pillPage - 1, 0)
+    private func goToPage(_ page: Int) {
+        let next = min(max(page, 0), pageCount - 1)
         guard next != pillPage else { return }
-        if next >= 1 { ensurePill(pillPages[next - 1]) }
-        withAnimation(.snappy(duration: 0.3)) { pillPage = next }
+        if (1...pillPages.count).contains(next) { ensurePill(pillPages[next - 1]) }
+        withAnimation(.snappy(duration: 0.3)) { pillPage = next; isDrawing = false }
         if hasSent { hasSent = false }
         pageHaptic.impactOccurred(intensity: 0.6)
         pageHaptic.prepare()
@@ -224,7 +420,7 @@ struct PhotoComposerView: View {
     private func cameraArea(side: CGFloat) -> some View {
         if camera.showsPreview {
             ZStack {
-                CameraPreview(session: camera.session)
+                CameraPreview(camera: camera)
                     .frame(width: side, height: side)
                 cameraOverlay
             }
@@ -233,7 +429,8 @@ struct PhotoComposerView: View {
         }
     }
 
-    /// In-frame controls: wide-angle (0.5×/1×) and flip up top, shutter at the bottom.
+    /// In-frame controls: wide-angle (0.5×/1×) and flip, pinned to the top. (Capture
+    /// now lives in the bottom bar — the primary button doubles as the shutter.)
     private var cameraOverlay: some View {
         VStack {
             HStack {
@@ -242,19 +439,8 @@ struct PhotoComposerView: View {
                 flipButton
             }
             Spacer()
-            shutterButton
         }
         .padding(16)
-    }
-
-    private var shutterButton: some View {
-        Button { captureTapped() } label: {
-            ZStack {
-                Circle().strokeBorder(.white.opacity(0.9), lineWidth: 4).frame(width: 66, height: 66)
-                Circle().fill(.white).frame(width: 54, height: 54)
-            }
-        }
-        .buttonStyle(SquishyButtonStyle())
     }
 
     private var flipButton: some View {
@@ -287,6 +473,8 @@ struct PhotoComposerView: View {
     }
 
     private func captureTapped() {
+        sendHaptic.impactOccurred()   // a shutter thunk on tap
+        sendHaptic.prepare()
         Task {
             guard let shot = await camera.capturePhoto() else { return }
             setImage(shot)
@@ -323,41 +511,19 @@ struct PhotoComposerView: View {
         }
     }
 
-    // MARK: Controls
+    // MARK: Cancel / retake
 
-    private var controls: some View {
-        HStack(spacing: 12) {
-            controlButton(title: "Gallery", systemImage: "photo") { activeSheet = .gallery }
-            // The camera is live in the frame; once a shot is taken, offer a retake
-            // (clears it → back to the live camera).
-            if image != nil {
-                controlButton(title: "Retake", systemImage: "camera") { retake() }
-            }
-        }
-    }
-
+    /// Reset the photo canvas back to the live camera — the bottom bar's cancel action.
     private func retake() {
-        withAnimation(.easeInOut(duration: 0.2)) {
+        withAnimation(.snappy(duration: 0.3)) {
             image = nil
             pills = [:]
             pillPage = 0
+            doodleStrokes = []
+            currentStroke = []
+            isDrawing = false
             hasSent = false
         }
-    }
-
-    private func controlButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                Text(title)
-            }
-            .font(DotFont.ui(15, weight: .bold))
-            .foregroundStyle(.white.opacity(0.85))
-            .frame(maxWidth: .infinity)
-            .frame(height: 52)
-            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
-        }
-        .buttonStyle(SquishyButtonStyle())
     }
 
     // MARK: Pill data (place / weather resolution)
@@ -400,21 +566,47 @@ struct PhotoComposerView: View {
     /// flow is enabled (and you have friends). Otherwise just the button (sheet flow).
     private var sendArea: some View {
         VStack(spacing: 12) {
-            if SendFlow.useInlineRecipients && appModel.canPickRecipients {
+            if SendFlow.useInlineRecipients && appModel.canPickRecipients && image != nil {
                 RecipientStrip()
                     .transition(.opacity)
             }
-            sendButton
+            HStack(spacing: 12) {
+                secondaryButton
+                primaryButton
+            }
         }
+        // The whole bar re-flows as a photo is taken / cleared — both buttons morph
+        // their glyph + label in place rather than swapping out.
+        .animation(.snappy(duration: 0.3), value: image != nil)
         .animation(.easeInOut(duration: 0.2), value: appModel.canPickRecipients)
     }
 
-    private var sendButton: some View {
-        Button { attemptSend() } label: {
+    /// Gallery while the camera's live; a cancel (×) that resets the canvas once a photo
+    /// is taken. The glyph swaps with a symbol-replace morph.
+    private var secondaryButton: some View {
+        Button { secondaryTapped() } label: {
+            Image(systemName: image == nil ? "photo" : "xmark")
+                .font(.system(size: 19, weight: .bold))
+                .contentTransition(.symbolEffect(.replace))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 62, height: 62)
+                .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Palette.boardBackground))
+        }
+        .buttonStyle(SquishyButtonStyle())
+    }
+
+    private func secondaryTapped() {
+        if image == nil { activeSheet = .gallery } else { retake() }
+    }
+
+    /// Doubles as the shutter (capture) while the camera's live and the send button once
+    /// there's a photo. Icon + label morph in place across capture → send → sent.
+    private var primaryButton: some View {
+        Button { primaryTapped() } label: {
             HStack(spacing: 10) {
-                Image(systemName: hasSent ? "checkmark" : "paperplane.fill")
+                Image(systemName: primaryIcon)
                     .contentTransition(.symbolEffect(.replace.downUp))
-                Text(hasSent ? "sent!" : "send")
+                Text(primaryTitle)
                     .contentTransition(.opacity)
             }
             .font(DotFont.heavy(19))
@@ -426,17 +618,31 @@ struct PhotoComposerView: View {
                     .fill(Theme.blue)
             )
             .scaleEffect(justSent && !reduceMotion ? 1.04 : 1.0)
-            .opacity(sendDisabled ? 0.45 : 1)
+            .opacity(primaryDisabled ? 0.45 : 1)
         }
         .buttonStyle(SquishyButtonStyle())
-        .disabled(sendDisabled)
-        .animation(.easeInOut(duration: 0.2), value: sendDisabled)
+        .disabled(primaryDisabled)
+        .animation(.easeInOut(duration: 0.2), value: primaryDisabled)
     }
 
-    /// Nothing to send: no photo yet, this exact framed shot already went out, or —
-    /// in the inline flow, when you have friends — nobody picked in the strip.
-    private var sendDisabled: Bool {
-        image == nil || hasSent
+    private func primaryTapped() {
+        if image == nil { captureTapped() } else { attemptSend() }
+    }
+
+    private var primaryIcon: String {
+        if image == nil { return "camera.fill" }
+        return hasSent ? "checkmark" : "paperplane.fill"
+    }
+    private var primaryTitle: String {
+        if image == nil { return "capture" }
+        return hasSent ? "sent!" : "send"
+    }
+
+    /// Capture is disabled until the live preview is up; send is disabled once sent (or,
+    /// in the inline flow with friends, until someone's picked).
+    private var primaryDisabled: Bool {
+        if image == nil { return !camera.showsPreview }
+        return hasSent
             || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
     }
 
@@ -472,21 +678,25 @@ struct PhotoComposerView: View {
         }
     }
 
-    /// The current pill, if any — the only thing baked over the photo.
+    /// The current pill, if any — baked over the photo on its page.
     private var activeStickers: [PhotoSticker] {
         guard let kind = currentKind, let pill = pills[kind] else { return [] }
         return [pill]
     }
 
-    /// The center-cropped square → downscaled, widget-safe JPEG, with the current pill
-    /// (if any) baked in at the same spot you see on screen.
+    /// Is there anything to bake over the photo on the current page (pill or doodle)?
+    private var hasOverlay: Bool {
+        pillPage == 0 ? !doodleStrokes.isEmpty : !activeStickers.isEmpty
+    }
+
+    /// The center-cropped square → downscaled, widget-safe JPEG, with the current
+    /// page's overlay (pill or doodle) baked in at the same spot you see on screen.
     @MainActor
     private func renderWidgetJPEG() -> Data? {
         guard let image, let rect = centerSquareRect() else { return nil }
 
-        // Plain photo (no pill) → the straight center-crop fast path.
-        let active = activeStickers
-        guard !active.isEmpty, frameSide > 0,
+        // Plain photo (nothing on this page) → the straight center-crop fast path.
+        guard hasOverlay, frameSide > 0,
               let base = ImageProcessing.croppedSquare(from: image, normalizedRect: rect)
         else { return ImageProcessing.widgetJPEG(from: image, normalizedRect: rect) }
 
@@ -498,9 +708,13 @@ struct PhotoComposerView: View {
                 .scaledToFill()
                 .frame(width: side, height: side)
                 .clipped()
-            ForEach(active) { s in
-                StickerChip(icon: s.icon, text: s.text)
-                    .position(x: s.position.x * side, y: s.position.y * side)
+            if pillPage == 0 {
+                PhotoDoodleCanvas(strokes: doodleStrokes, size: CGSize(width: side, height: side))
+            } else {
+                ForEach(activeStickers) { s in
+                    StickerChip(icon: s.icon, text: s.text)
+                        .position(x: s.position.x * side, y: s.position.y * side)
+                }
             }
         }
         .frame(width: side, height: side)
@@ -525,9 +739,15 @@ struct PhotoComposerView: View {
     }
 
     private func setImage(_ new: UIImage) {
-        image = new.normalizedUp()
-        pills = [:]       // start the new photo on the plain page
-        pillPage = 0
-        withAnimation { hasSent = false }   // new photo → can send again
+        let normalized = new.normalizedUp()
+        withAnimation(.snappy(duration: 0.3)) {
+            image = normalized   // first page; the bottom bar morphs capture → send
+            pills = [:]
+            pillPage = 0
+            doodleStrokes = []
+            currentStroke = []
+            isDrawing = false
+            hasSent = false
+        }
     }
 }
