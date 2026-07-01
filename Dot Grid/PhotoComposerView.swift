@@ -57,6 +57,14 @@ struct PhotoComposerView: View {
     @State private var dragHeight: CGFloat = 0   // live tray drag (negative = pulling up)
     @State private var panelHeight: CGFloat = 160 // measured doodle-panel height (to hide it)
 
+    // First-run "pull up to doodle" nudge: a bouncing chevron shown the first few times a
+    // photo lands, then never again. `doodleHintCount` persists the budget across launches.
+    @AppStorage("photoDoodleHintCount") private var doodleHintCount = 0
+    @State private var hintVisible = false
+    @State private var hintOffset: CGFloat = 0
+    @State private var hintTask: Task<Void, Never>?
+    private let doodleHintBudget = 3
+
     /// Carousel order after the plain photo. (Weather is parked — see StickerKind.carousel.)
     private let pillPages = StickerKind.carousel
     private let penWidthFraction: CGFloat = 0.02
@@ -92,6 +100,9 @@ struct PhotoComposerView: View {
         .onChange(of: isActive) { _, _ in syncCamera() }
         .onChange(of: scenePhase) { _, _ in syncCamera() }
         .onChange(of: image) { _, _ in syncCamera() }
+        // The user engaged the doodle (opened the tray or paged away) — drop the nudge.
+        .onChange(of: isDrawing) { _, drawing in if drawing { cancelDoodleHint() } }
+        .onChange(of: pillPage) { _, page in if page != 0 { cancelDoodleHint() } }
     }
 
     /// Start the live camera only when the tab is active, frontmost, and we're not
@@ -117,7 +128,7 @@ struct PhotoComposerView: View {
                     photoImage(image, side: side)
                     doodleOverlay(side: side)
                     pillOverlay(side: side)
-                    if pillPage == 0 { doodlePullTab }
+                    if pillPage == 0 && !isDrawing { doodleHintChevron }
                     doodleTray
                 } else {
                     cameraArea(side: side)
@@ -222,8 +233,8 @@ struct PhotoComposerView: View {
 
     private var doodlePanel: some View {
         doodleToolbarRow
-            .padding(.top, 42)
-            .padding(.bottom, 16)
+            .padding(.top, 30)
+            .padding(.bottom, 11)
             .frame(maxWidth: .infinity)
             .background(progressiveBlur)
             .background(                       // measure the panel so it tucks away exactly
@@ -244,10 +255,11 @@ struct PhotoComposerView: View {
         return min(max(base + dragHeight, 0), panelHeight)
     }
 
-    /// Just a cute progressive blur behind the toolbar — no scrim/colour. UIKit-backed,
-    /// so it slides with the tray without flashing. The frame's clip shapes its corners.
+    /// A true variable/progressive blur behind the toolbar — no scrim/colour, the blur
+    /// radius ramps toward the bottom. UIKit-backed, so it slides with the tray without
+    /// flashing. The frame's clip shapes its corners.
     private var progressiveBlur: some View {
-        ProgressiveBlur().allowsHitTesting(false)
+        VariableBlurView(maxRadius: 14).allowsHitTesting(false)
     }
 
     private var doodleToolbarRow: some View {
@@ -269,26 +281,21 @@ struct PhotoComposerView: View {
         .padding(.horizontal, 12)
     }
 
-    /// A subtle grabber peeking at the bottom of page 0, hinting "swipe up to doodle".
-    /// Stays mounted; its opacity tracks the tray so it fades out as you pull up (with
-    /// the finger and with the settle) and fades back in as the tray tucks away.
-    private var doodlePullTab: some View {
+    /// A first-run nudge: a small chevron at the bottom of page 0 that hops up twice —
+    /// no grabber, no text — hinting "pull up to doodle". Shown for the first few photos
+    /// only (see `nudgeDoodleHint`), then never again. `hintOffset` drives the hop;
+    /// `hintVisible` fades it in/out.
+    private var doodleHintChevron: some View {
         VStack {
             Spacer()
-            Capsule().fill(.white.opacity(0.4)).frame(width: 40, height: 5)
+            Image(systemName: "chevron.compact.up")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.6))
+                .offset(y: hintOffset)
                 .padding(.bottom, 12)
         }
-        .opacity(pullTabOpacity)
+        .opacity(hintVisible ? 1 : 0)
         .allowsHitTesting(false)   // the photo's swipe-up gesture does the reveal
-    }
-
-    /// 1 when the tray is fully closed → 0 once it's a little way open. Driven off
-    /// `trayTranslation` (not `isDrawing`) so the fade follows the drag 1:1 and rides the
-    /// same settle animation; it clears early so the hint is gone before the toolbar rises.
-    private var pullTabOpacity: CGFloat {
-        guard panelHeight > 0 else { return isDrawing ? 0 : 1 }
-        let progress = trayTranslation / panelHeight   // 1 = closed, 0 = open
-        return min(max((progress - 0.6) / 0.4, 0), 1)  // fully faded by ~40% open
     }
 
     /// Spring-free settle for the tray — a strong ease-out so it glides to rest without
@@ -770,5 +777,47 @@ struct PhotoComposerView: View {
             isDrawing = false
             hasSent = false
         }
+        nudgeDoodleHint()
+    }
+
+    /// Fire the first-run doodle nudge for the first `doodleHintBudget` photos, then stop.
+    private func nudgeDoodleHint() {
+        guard doodleHintCount < doodleHintBudget else { return }
+        doodleHintCount += 1
+        hintTask?.cancel()
+        hintTask = Task { await runDoodleHint() }
+    }
+
+    /// Let the photo settle, then hop the chevron up-and-back twice — slow and smooth —
+    /// and fade it away. Reduce Motion gets a still chevron that lingers, then fades.
+    @MainActor
+    private func runDoodleHint() async {
+        hintOffset = 0
+        try? await Task.sleep(for: .milliseconds(450))   // let the photo-in animation finish
+        guard !Task.isCancelled, image != nil else { return }
+
+        withAnimation(.easeOut(duration: 0.3)) { hintVisible = true }
+
+        if reduceMotion {
+            try? await Task.sleep(for: .milliseconds(1400))
+        } else {
+            for _ in 0..<2 {
+                withAnimation(.easeInOut(duration: 0.55)) { hintOffset = -12 }
+                try? await Task.sleep(for: .milliseconds(550))
+                withAnimation(.easeInOut(duration: 0.55)) { hintOffset = 0 }
+                try? await Task.sleep(for: .milliseconds(550))
+                if Task.isCancelled { return }
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+
+        guard !Task.isCancelled else { return }
+        withAnimation(.easeOut(duration: 0.4)) { hintVisible = false }
+    }
+
+    /// The user engaged (opened the tray) — drop the nudge immediately.
+    private func cancelDoodleHint() {
+        hintTask?.cancel()
+        hintVisible = false
     }
 }
