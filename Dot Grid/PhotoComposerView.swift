@@ -117,7 +117,7 @@ struct PhotoComposerView: View {
                     photoImage(image, side: side)
                     doodleOverlay(side: side)
                     pillOverlay(side: side)
-                    if pillPage == 0 && !isDrawing { doodlePullTab }
+                    if pillPage == 0 { doodlePullTab }
                     doodleTray
                 } else {
                     cameraArea(side: side)
@@ -143,23 +143,19 @@ struct PhotoComposerView: View {
     }
     private var pageCount: Int { pillPages.count + 1 }   // first photo + pills
 
-    /// The photo. On page 0 while drawing a drag draws; on page 0 otherwise a drag
-    /// pages horizontally or — swiped up — reveals the doodle tray; on pill pages it pages.
-    @ViewBuilder
+    /// The photo. A SINGLE gesture drives every mode (draw / tray-pull / page) so the
+    /// Image's identity never changes. Swapping the gesture through an if/else would put
+    /// this Image in different branches of a ViewBuilder conditional, which makes SwiftUI
+    /// tear it down and re-decode the full-res photo on every mode flip — that re-decode
+    /// was the dark-board "black flash" and the hitch when the doodle tray opened/closed.
     private func photoImage(_ image: UIImage, side: CGFloat) -> some View {
-        let base = Image(uiImage: image)
+        Image(uiImage: image)
             .resizable()
             .scaledToFill()
             .frame(width: side, height: side)
             .clipped()
             .contentShape(Rectangle())
-        if pillPage == 0 && isDrawing {
-            base.gesture(drawGesture(side: side))
-        } else if pillPage == 0 {
-            base.gesture(page0Gesture)
-        } else {
-            base.gesture(pageSwipe)
-        }
+            .gesture(photoGesture(side: side))
     }
 
     /// The freehand strokes, shown on the first page (where the doodle lives) — both
@@ -174,20 +170,39 @@ struct PhotoComposerView: View {
         }
     }
 
-    private func drawGesture(side: CGFloat) -> some Gesture {
+    /// One gesture for the photo, dispatched by the current mode — kept as a single
+    /// DragGesture (not swapped per mode) so `photoImage` never changes structure; see
+    /// there for why that matters. `minimumDistance: 0` so a stroke captures from touch
+    /// down; the paging / tray thresholds are applied on release instead.
+    private func photoGesture(side: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(stickerSpace))
             .onChanged { value in
-                guard side > 0 else { return }
-                currentStroke.append(CGPoint(x: min(max(value.location.x / side, 0), 1),
-                                             y: min(max(value.location.y / side, 0), 1)))
+                if pillPage == 0 && isDrawing {
+                    guard side > 0 else { return }
+                    currentStroke.append(CGPoint(x: min(max(value.location.x / side, 0), 1),
+                                                 y: min(max(value.location.y / side, 0), 1)))
+                } else if pillPage == 0 {
+                    let dx = value.translation.width, dy = value.translation.height
+                    dragHeight = (dy < 0 && abs(dy) > abs(dx)) ? dy : 0   // follow upward pulls only
+                }
             }
-            .onEnded { _ in
-                guard !currentStroke.isEmpty else { return }
-                doodleStrokes.append(PhotoStroke(points: currentStroke, colorIndex: penColorIndex,
-                                                 widthFraction: penWidthFraction))
-                currentStroke = []
-                if hasSent { hasSent = false }
+            .onEnded { value in
+                if pillPage == 0 && isDrawing {
+                    endStroke()
+                } else if pillPage == 0 {
+                    endPage0Drag(value)
+                } else {
+                    endPageSwipe(value)
+                }
             }
+    }
+
+    private func endStroke() {
+        guard !currentStroke.isEmpty else { return }
+        doodleStrokes.append(PhotoStroke(points: currentStroke, colorIndex: penColorIndex,
+                                         widthFraction: penWidthFraction))
+        currentStroke = []
+        if hasSent { hasSent = false }
     }
 
     /// The doodle panel on page 0: the toolbar resting on a soft progressive blur that
@@ -255,13 +270,25 @@ struct PhotoComposerView: View {
     }
 
     /// A subtle grabber peeking at the bottom of page 0, hinting "swipe up to doodle".
+    /// Stays mounted; its opacity tracks the tray so it fades out as you pull up (with
+    /// the finger and with the settle) and fades back in as the tray tucks away.
     private var doodlePullTab: some View {
         VStack {
             Spacer()
             Capsule().fill(.white.opacity(0.4)).frame(width: 40, height: 5)
                 .padding(.bottom, 12)
         }
+        .opacity(pullTabOpacity)
         .allowsHitTesting(false)   // the photo's swipe-up gesture does the reveal
+    }
+
+    /// 1 when the tray is fully closed → 0 once it's a little way open. Driven off
+    /// `trayTranslation` (not `isDrawing`) so the fade follows the drag 1:1 and rides the
+    /// same settle animation; it clears early so the hint is gone before the toolbar rises.
+    private var pullTabOpacity: CGFloat {
+        guard panelHeight > 0 else { return isDrawing ? 0 : 1 }
+        let progress = trayTranslation / panelHeight   // 1 = closed, 0 = open
+        return min(max((progress - 0.6) / 0.4, 0), 1)  // fully faded by ~40% open
     }
 
     /// Spring-free settle for the tray — a strong ease-out so it glides to rest without
@@ -270,34 +297,31 @@ struct PhotoComposerView: View {
         reduceMotion ? .easeOut(duration: 0.12) : Motion.crisp(0.3)
     }
 
-    /// Page 0's idle drag. An upward, vertical drag pulls the doodle tray up live; a
-    /// horizontal one pages the carousel. On release the tray commits (distance OR a
-    /// flick) or eases back — no spring.
-    private var page0Gesture: some Gesture {
-        DragGesture(minimumDistance: 8)
-            .onChanged { value in
-                let dx = value.translation.width, dy = value.translation.height
-                dragHeight = (dy < 0 && abs(dy) > abs(dx)) ? dy : 0   // follow upward pulls only
-            }
-            .onEnded { value in
-                let dx = value.translation.width, dy = value.translation.height
-                let flickUp = value.predictedEndTranslation.height < -120
-                if (dy < -50 || flickUp) && abs(dy) > abs(dx) {
-                    withAnimation(traySettle) { isDrawing = true; dragHeight = 0 }
-                    pageHaptic.impactOccurred(intensity: 0.6); pageHaptic.prepare()
-                } else if abs(dx) > 44 && abs(dx) > abs(dy) * 1.2 {
-                    dragHeight = 0
-                    goToPage(pillPage + (dx < 0 ? 1 : -1))
-                } else {
-                    withAnimation(traySettle) { dragHeight = 0 }   // not enough → ease back
-                }
-            }
+    /// Page 0's release handling. An upward flick/drag opens the doodle tray; a
+    /// horizontal one pages the carousel; anything short eases back — no spring. (The
+    /// live upward tracking happens in `photoGesture`'s onChanged.)
+    private func endPage0Drag(_ value: DragGesture.Value) {
+        let dx = value.translation.width, dy = value.translation.height
+        let flickUp = value.predictedEndTranslation.height < -120
+        if (dy < -50 || flickUp) && abs(dy) > abs(dx) {
+            withAnimation(traySettle) { isDrawing = true; dragHeight = 0 }
+            pageHaptic.impactOccurred(intensity: 0.6); pageHaptic.prepare()
+        } else if abs(dx) > 44 && abs(dx) > abs(dy) * 1.2 {
+            dragHeight = 0
+            goToPage(pillPage + (dx < 0 ? 1 : -1))
+        } else {
+            withAnimation(traySettle) { dragHeight = 0 }   // not enough → ease back
+        }
     }
 
     /// A downward drag anywhere on the panel tucks the doodle away, tracking the finger
-    /// and committing on distance or a downward flick.
+    /// and committing on distance or a downward flick. Measured in the fixed `stickerSpace`
+    /// — NOT the default `.local` space: this gesture's host panel is itself offset by
+    /// `trayTranslation`, so a local-space translation would be measured against an origin
+    /// that the drag keeps moving, feeding back into a bouncy/jittery close. The frame's
+    /// coordinate space doesn't move, so translation stays pure finger movement.
     private var panelDragGesture: some Gesture {
-        DragGesture(minimumDistance: 10)
+        DragGesture(minimumDistance: 10, coordinateSpace: .named(stickerSpace))
             .onChanged { value in
                 guard isDrawing, value.translation.height > 0 else { return }
                 dragHeight = value.translation.height
@@ -376,15 +400,12 @@ struct PhotoComposerView: View {
         .animation(.snappy(duration: 0.2), value: pillPage)
     }
 
-    /// A horizontal swipe on the photo (not on a pill) pages the carousel — used on the
-    /// pill pages (page 0 uses page0Gesture so it can also swipe up to doodle).
-    private var pageSwipe: some Gesture {
-        DragGesture(minimumDistance: 24)
-            .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) * 1.2,
-                      abs(value.translation.width) > 44 else { return }
-                goToPage(pillPage + (value.translation.width < 0 ? 1 : -1))   // left → next
-            }
+    /// Pill pages' release handling: a horizontal swipe on the photo (not on a pill)
+    /// pages the carousel. (Page 0 uses `endPage0Drag` so it can also swipe up to doodle.)
+    private func endPageSwipe(_ value: DragGesture.Value) {
+        guard abs(value.translation.width) > abs(value.translation.height) * 1.2,
+              abs(value.translation.width) > 44 else { return }
+        goToPage(pillPage + (value.translation.width < 0 ? 1 : -1))   // left → next
     }
 
     private func goToPage(_ page: Int) {
