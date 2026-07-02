@@ -96,6 +96,7 @@ struct InboxView: View {
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(SquishyButtonStyle())
+            .accessibilityLabel("dismiss")
         }
         .padding(.leading, 14)
         .padding(.trailing, 6)
@@ -161,6 +162,7 @@ struct InboxView: View {
                 }
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
     }
 
     // MARK: Feed (one tab at a time)
@@ -233,6 +235,9 @@ struct InboxView: View {
             Color.black.opacity(0.8)
                 .ignoresSafeArea()
                 .onTapGesture { withAnimation(Motion.settle) { peek = nil } }
+                .accessibilityLabel("close")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { withAnimation(Motion.settle) { peek = nil } }
                 .transition(.opacity)
             VStack(spacing: 18) {
                 DotdotView(drawing: entry.drawing)

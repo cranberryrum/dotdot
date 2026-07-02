@@ -18,6 +18,8 @@ struct SettingsView: View {
     @State private var symbol: String
     @State private var colorIndex: Int
     @State private var saving = false
+    @State private var saveStatus: SaveStatus?
+    @State private var saveStatusResetTask: Task<Void, Never>?
 
     @State private var generatingCode = false
     @State private var copied = false
@@ -119,6 +121,8 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .animation(.spring(response: 0.25, dampingFraction: 0.7), value: colorIndex)
+                    .accessibilityLabel(Palette.name(at: index))
+                    .accessibilityAddTraits(colorIndex == index ? .isSelected : [])
                 }
             }
 
@@ -132,12 +136,35 @@ struct SettingsView: View {
             .buttonStyle(SquishyButtonStyle())
             .disabled(trimmedName.isEmpty || !profileChanged || saving)
             .opacity(trimmedName.isEmpty || !profileChanged ? 0.5 : 1)
+
+            // In-sheet feedback: toasts host behind sheets, so they'd be invisible here.
+            if let saveStatus {
+                Text(saveStatus.text)
+                    .font(DotFont.ui(13, weight: .semibold))
+                    .foregroundStyle(saveStatus.isError ? Theme.red : .white.opacity(0.6))
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity)
+            }
         }
     }
 
+    private struct SaveStatus { let text: String; let isError: Bool }
+
     private func saveProfile() async {
         saving = true
-        try? await appModel.updateProfile(name: trimmedName, token: token)
+        withAnimation(Motion.surface) { saveStatus = nil }
+        do {
+            try await appModel.updateProfile(name: trimmedName, token: token)
+            withAnimation(Motion.surface) { saveStatus = .init(text: "saved!", isError: false) }
+            saveStatusResetTask?.cancel()
+            saveStatusResetTask = Task {
+                try? await Task.sleep(for: .seconds(1.8))
+                guard !Task.isCancelled else { return }
+                withAnimation(Motion.surface) { saveStatus = nil }
+            }
+        } catch {
+            withAnimation(Motion.surface) { saveStatus = .init(text: "couldn't save — try again", isError: true) }
+        }
         saving = false
     }
 
@@ -162,6 +189,7 @@ struct SettingsView: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(SquishyButtonStyle())
+                    .accessibilityLabel(copied ? "copied" : "copy code")
                 }
 
                 ShareLink(item: AppModel.inviteMessage(code: code)) {

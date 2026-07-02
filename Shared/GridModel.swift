@@ -101,22 +101,28 @@ enum Palette {
     struct Entry {
         let color: Color
         let prefersDarkText: Bool
+        let name: String   // spoken by VoiceOver on the color swatches
     }
 
     /// The loud chrome palette — what dots light up in (picked in the composer).
     static let entries: [Entry] = [
-        Entry(color: Theme.blue,   prefersDarkText: false),
-        Entry(color: Theme.pink,   prefersDarkText: false),
-        Entry(color: Theme.lime,   prefersDarkText: true),
-        Entry(color: Theme.red,    prefersDarkText: false),
-        Entry(color: Theme.yellow, prefersDarkText: true),
-        Entry(color: Theme.mint,   prefersDarkText: true),
-        Entry(color: Theme.peri,   prefersDarkText: false),
-        Entry(color: Theme.cream,  prefersDarkText: true),
+        Entry(color: Theme.blue,   prefersDarkText: false, name: "blue"),
+        Entry(color: Theme.pink,   prefersDarkText: false, name: "pink"),
+        Entry(color: Theme.lime,   prefersDarkText: true,  name: "lime"),
+        Entry(color: Theme.red,    prefersDarkText: false, name: "red"),
+        Entry(color: Theme.yellow, prefersDarkText: true,  name: "yellow"),
+        Entry(color: Theme.mint,   prefersDarkText: true,  name: "mint"),
+        Entry(color: Theme.peri,   prefersDarkText: false, name: "periwinkle"),
+        Entry(color: Theme.cream,  prefersDarkText: true,  name: "cream"),
     ]
 
     static func color(at index: Int) -> Color {
         entries.indices.contains(index) ? entries[index].color : entries[0].color
+    }
+
+    /// The spoken name for a swatch (for `.accessibilityLabel`).
+    static func name(at index: Int) -> String {
+        entries.indices.contains(index) ? entries[index].name : entries[0].name
     }
 
     static let screenBackground = Theme.ink     // app / editor background

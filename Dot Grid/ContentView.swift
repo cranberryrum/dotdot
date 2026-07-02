@@ -214,6 +214,8 @@ struct ContentView: View {
             reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.2, dampingFraction: 0.75),
             value: selectedColorIndex
         )
+        .accessibilityLabel(Palette.name(at: index))
+        .accessibilityAddTraits(selectedColorIndex == index ? .isSelected : [])
     }
 
     private var sizeButton: some View {
@@ -235,6 +237,7 @@ struct ContentView: View {
             .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("dot size")
     }
 
     private func cycleSize() {
@@ -261,6 +264,7 @@ struct ContentView: View {
             .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("clear grid")
     }
 
     private var shapesButton: some View {
@@ -279,6 +283,8 @@ struct ContentView: View {
             .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("shapes")
+        .accessibilityAddTraits(showStampTray ? .isSelected : [])
     }
 
     /// Toggles the canvas between 8×8 and 12×12. A compact "8×" / "12×" label (the
@@ -297,6 +303,8 @@ struct ContentView: View {
             .frame(width: 52, height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("grid size")
+        .accessibilityValue("\(grid.side) by \(grid.side)")
     }
 
     private func cycleGridSize() {
@@ -339,6 +347,7 @@ struct ContentView: View {
                         )
                     }
                     .buttonStyle(SquishyButtonStyle())
+                    .accessibilityLabel("\(stamp.name) stamp")
                 }
             }
             .padding(.horizontal, 4)

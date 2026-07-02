@@ -160,6 +160,7 @@ struct AddFriendView: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .buttonStyle(SquishyButtonStyle())
+                    .accessibilityLabel(copied ? "copied" : "copy code")
                 }
                 if let exp = appModel.inviteCodeExpiresAt {
                     Text("expires \(exp, style: .relative) · reusable till then")

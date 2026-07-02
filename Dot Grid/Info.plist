@@ -7,7 +7,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>DOTDOT uses the camera so you can take a photo to send to a friend's widget.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>DOTDOT uses your location only to add a place or weather sticker to a photo you choose to send. It is never stored or shared.</string>
+	<string>DOTDOT uses your location only to add a place sticker to a photo you choose to send. It is never stored or shared.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>ArchivoBlack-Regular.ttf</string>

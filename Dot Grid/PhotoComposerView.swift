@@ -65,7 +65,7 @@ struct PhotoComposerView: View {
     @State private var hintTask: Task<Void, Never>?
     private let doodleHintBudget = 3
 
-    /// Carousel order after the plain photo. (Weather is parked — see StickerKind.carousel.)
+    /// Carousel order after the plain photo (time, place).
     private let pillPages = StickerKind.carousel
     private let penWidthFraction: CGFloat = 0.02
     private let stickerSpace = "stickerFrame"
@@ -264,7 +264,7 @@ struct PhotoComposerView: View {
 
     private var doodleToolbarRow: some View {
         HStack(spacing: 7) {
-            doodleTool(icon: "arrow.uturn.backward", enabled: !doodleStrokes.isEmpty) { undoDoodle() }
+            doodleTool(icon: "arrow.uturn.backward", label: "undo", enabled: !doodleStrokes.isEmpty) { undoDoodle() }
             ForEach(Palette.entries.indices, id: \.self) { index in
                 Button { penColorIndex = index } label: {
                     Circle()
@@ -274,8 +274,10 @@ struct PhotoComposerView: View {
                         .scaleEffect(penColorIndex == index ? 1 : 0.82)
                 }
                 .buttonStyle(SquishyButtonStyle())
+                .accessibilityLabel(Palette.name(at: index))
+                .accessibilityAddTraits(penColorIndex == index ? .isSelected : [])
             }
-            doodleTool(icon: "trash.fill", enabled: !doodleStrokes.isEmpty) { clearDoodle() }
+            doodleTool(icon: "trash.fill", label: "clear doodle", enabled: !doodleStrokes.isEmpty) { clearDoodle() }
         }
         .animation(.snappy(duration: 0.18), value: penColorIndex)
         .padding(.horizontal, 12)
@@ -344,7 +346,7 @@ struct PhotoComposerView: View {
             }
     }
 
-    private func doodleTool(icon: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+    private func doodleTool(icon: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .bold))
@@ -353,6 +355,7 @@ struct PhotoComposerView: View {
         }
         .buttonStyle(SquishyButtonStyle())
         .disabled(!enabled)
+        .accessibilityLabel(label)
     }
 
     private func undoDoodle() {
@@ -428,7 +431,7 @@ struct PhotoComposerView: View {
     /// Create a pill the first time its page is shown (time = now; place resolves async).
     private func ensurePill(_ kind: StickerKind) {
         guard pills[kind] == nil else { return }
-        let pos = CGPoint(x: 0.5, y: 0.85)
+        let pos = CGPoint(x: 0.5, y: 0.90)   // sits low by default; stays within the 0.93 drag clamp
         switch kind {
         case .time:
             pills[.time] = PhotoSticker(kind: .time, icon: kind.defaultIcon,
@@ -436,9 +439,6 @@ struct PhotoComposerView: View {
         case .location:
             pills[.location] = PhotoSticker(kind: .location, icon: kind.defaultIcon, text: "locating…", position: pos)
             Task { await resolveLocation() }
-        case .weather:
-            pills[.weather] = PhotoSticker(kind: .weather, icon: kind.defaultIcon, text: "…", position: pos)
-            Task { await resolveWeather() }
         }
     }
 
@@ -476,6 +476,7 @@ struct PhotoComposerView: View {
             Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
                 .font(.system(size: 17, weight: .bold))
         }
+        .accessibilityLabel("flip camera")
     }
 
     /// Toggles the back camera between the 1× wide and 0.5× ultra-wide lens.
@@ -485,6 +486,8 @@ struct PhotoComposerView: View {
                 .font(DotFont.heavy(14))
                 .contentTransition(.numericText())
         }
+        .accessibilityLabel("camera lens")
+        .accessibilityValue(camera.isWide ? "ultra wide" : "wide")
     }
 
     private func cameraControl<Content: View>(action: @escaping () -> Void,
@@ -554,7 +557,7 @@ struct PhotoComposerView: View {
         }
     }
 
-    // MARK: Pill data (place / weather resolution)
+    // MARK: Pill data (place resolution)
 
     private func resolveLocation() async {
         do {
@@ -567,25 +570,10 @@ struct PhotoComposerView: View {
         }
     }
 
-    private func resolveWeather() async {
-        do {
-            let loc = try await locationProvider.current()
-            let w = try await WeatherProvider.current(for: loc)
-            update(.weather) { $0.icon = w.icon; $0.text = w.text }
-        } catch {
-            remove(.weather)
-            appModel.showToast("couldn't get the weather", icon: "cloud.slash.fill")
-        }
-    }
-
     private func update(_ kind: StickerKind, _ change: (inout PhotoSticker) -> Void) {
         guard var pill = pills[kind] else { return }
         change(&pill)
         pills[kind] = pill
-    }
-
-    private func remove(_ kind: StickerKind) {
-        pills[kind] = nil
     }
 
     // MARK: Send
@@ -621,6 +609,7 @@ struct PhotoComposerView: View {
                 .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Palette.boardBackground))
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel(image == nil ? "choose from gallery" : "discard photo")
     }
 
     private func secondaryTapped() {
@@ -675,7 +664,10 @@ struct PhotoComposerView: View {
     }
 
     private func attemptSend() {
-        guard let data = renderWidgetJPEG() else { return }
+        guard let data = renderWidgetJPEG() else {
+            appModel.showToast("couldn't prepare that photo", icon: "exclamationmark.triangle.fill")
+            return
+        }
         pendingPhoto = data
         if SendFlow.useInlineRecipients {
             finalizeSend(to: appModel.canPickRecipients ? appModel.resolvedRecipientIDs : [])

@@ -112,6 +112,7 @@ struct ComposerView: View {
             HStack(spacing: 10) {
                 Button { activeSheet = .inbox } label: { wordmark }
                     .buttonStyle(SquishyButtonStyle())
+                    .accessibilityLabel("dotdot inbox")
                 Spacer()
                 if appModel.hasPendingSends {
                     HStack(spacing: 4) {
@@ -120,6 +121,8 @@ struct ComposerView: View {
                     }
                     .font(DotFont.mono(12, bold: true))
                     .foregroundStyle(.white.opacity(0.55))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(appModel.outbox.count) waiting to send")
                 }
                 Button { activeSheet = .addFriend } label: {
                     Image(systemName: "person.badge.plus")
@@ -129,10 +132,14 @@ struct ComposerView: View {
                         .background(Circle().fill(Palette.boardBackground))
                 }
                 .buttonStyle(SquishyButtonStyle())
+                .accessibilityLabel("add a friend")
                 if let me = appModel.profile {
                     TokenBadge(token: me.token, size: 32)
                         .onTapGesture { activeSheet = .settings }
                         .onLongPressGesture { activeSheet = .debug }
+                        .accessibilityElement()
+                        .accessibilityLabel("settings")
+                        .accessibilityAddTraits(.isButton)
                 }
             }
             if !appModel.isSignedIn {

@@ -2,25 +2,22 @@
 //  PhotoStickers.swift
 //  Dot Grid
 //
-//  Photo-widget stickers: time, place, and weather pills the user drops on a photo
-//  before sending. They're baked INTO the sent JPEG (see PhotoComposerView's
-//  renderer), so the widget needs no changes — what you frame is what they see.
-//  A time/weather pill is therefore frozen at send, like a stamp on a postcard.
+//  Photo-widget stickers: time and place pills the user drops on a photo before
+//  sending. They're baked INTO the sent JPEG (see PhotoComposerView's renderer),
+//  so the widget needs no changes — what you frame is what they see. A time pill
+//  is therefore frozen at send, like a stamp on a postcard.
 //
 
 import CoreLocation
 import SwiftUI
-import WeatherKit
 
 // MARK: - Model
 
 enum StickerKind: String, Identifiable, CaseIterable {
-    case time, location, weather
+    case time, location
     var id: String { rawValue }
 
     /// Kinds shown in the photo pill carousel, in order (after the plain-photo page).
-    /// Weather is parked for now — all of its code (the `.weather` case, icon, and
-    /// `resolveWeather`) is kept intact; add `.weather` back here to re-enable it.
     static let carousel: [StickerKind] = [.time, .location]
 
     /// Tray label + the icon shown before live data resolves.
@@ -28,14 +25,12 @@ enum StickerKind: String, Identifiable, CaseIterable {
         switch self {
         case .time: "time"
         case .location: "place"
-        case .weather: "weather"
         }
     }
     var defaultIcon: String {
         switch self {
         case .time: "clock.fill"
         case .location: "mappin.and.ellipse"
-        case .weather: "cloud.sun.fill"
         }
     }
 }
@@ -144,17 +139,3 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     }
 }
 
-// MARK: - Weather (WeatherKit)
-
-enum WeatherProvider {
-    /// Current conditions for a location → (SF Symbol name, short temperature string).
-    static func current(for location: CLLocation) async throws -> (icon: String, text: String) {
-        let weather = try await WeatherService.shared.weather(for: location)
-        let now = weather.currentWeather
-        let temp = now.temperature.formatted(
-            .measurement(width: .narrow, usage: .weather,
-                         numberFormatStyle: .number.precision(.fractionLength(0)))
-        )
-        return (now.symbolName, temp)
-    }
-}
