@@ -2,35 +2,25 @@
 //  DoodleComposerView.swift
 //  Dot Grid
 //
-//  Doodle mode: a freehand scribble canvas. Strokes are drawn on the board (which
-//  can be flood-filled with a color via long-press), erased, undone, and — on send —
-//  rendered to a widget-safe JPEG that rides the existing photo pipeline, so what you
-//  draw is exactly what your friend sees.
+//  Doodle mode: a freehand scribble canvas backed by Apple's native PencilKit inks
+//  (the same engine Notes uses). Strokes are drawn on the board (which can be filled
+//  with a color), erased, undone, and — on send — rendered to a widget-safe JPEG that
+//  rides the existing photo pipeline, so what you draw is exactly what your friend sees.
 //
 
+import Combine
+import PencilKit
 import SwiftUI
 import UIKit
 
-/// One freehand stroke. Points are normalized (0...1) to the canvas so they scale
-/// cleanly from the on-screen board to the high-res baked image. An eraser stroke
-/// cuts through everything drawn before it (revealing the board / fill behind).
-private struct DoodleStroke: Identifiable {
-    let id = UUID()
-    var points: [CGPoint]
-    var colorIndex: Int
-    var widthFraction: CGFloat
-    var style: BrushStyle
-    var isEraser: Bool = false
-}
-
+/// Brush size → the native ink's base width in points (velocity still modulates it).
 private enum Brush: CaseIterable {
     case thin, medium, thick
-    /// Stroke width as a fraction of the canvas width (resolution-independent).
-    var fraction: CGFloat {
+    var width: CGFloat {
         switch self {
-        case .thin: 0.013
-        case .medium: 0.024
-        case .thick: 0.040
+        case .thin: 4
+        case .medium: 9
+        case .thick: 18
         }
     }
     /// Diameter of the dot shown in the brush-size button.
@@ -43,8 +33,7 @@ private enum Brush: CaseIterable {
     }
 }
 
-/// How a stroke is painted. Rendering is deterministic (no live randomness) so the
-/// on-screen Canvas and the baked JPEG are pixel-identical.
+/// The three native PencilKit inks we expose, cycled by the style button.
 private enum BrushStyle: CaseIterable {
     case pen, crayon, watercolor
     var icon: String {
@@ -54,19 +43,124 @@ private enum BrushStyle: CaseIterable {
         case .watercolor: "paintbrush.fill"
         }
     }
+    var inkType: PKInkingTool.InkType {
+        switch self {
+        case .pen: .pen
+        case .crayon: .crayon
+        case .watercolor: .watercolor
+        }
+    }
 }
 
-/// One reversible edit, so undo restores strokes AND fills in the right order.
-private enum DoodleAction {
-    case stroke
-    case fill(previous: Int?)
+/// A snapshot to restore after a clear (undo toast): the native drawing + the fill.
+private struct DoodleSnapshot { let drawing: PKDrawing; let fill: Int? }
+
+/// Owns the `PKCanvasView` and bridges it to SwiftUI. The canvas draws with real
+/// PencilKit inks; the flood-fill lives behind it as a background layer (so the eraser
+/// reveals it rather than removing it) but is still undoable through the canvas's own
+/// undo manager, interleaved correctly with strokes.
+private final class DoodleCanvasController: NSObject, ObservableObject, PKCanvasViewDelegate {
+    let canvas = PKCanvasView()
+
+    @Published private(set) var isEmpty = true
+    @Published private(set) var canUndo = false
+    @Published var fillColorIndex: Int?
+    @Published private(set) var changeCount = 0   // bumps on any edit → view re-enables send
+
+    var canvasSize: CGSize = .zero
+
+    override init() {
+        super.init()
+        canvas.drawingPolicy = .anyInput          // finger drawing (not just Apple Pencil)
+        canvas.backgroundColor = .clear
+        canvas.isOpaque = false
+        canvas.isScrollEnabled = false            // it's a UIScrollView — lock it to a canvas
+        canvas.minimumZoomScale = 1
+        canvas.maximumZoomScale = 1
+        canvas.bouncesZoom = false
+        canvas.delegate = self
+        canvas.tool = PKInkingTool(.pen, color: UIColor(Palette.color(at: 0)), width: Brush.medium.width)
+    }
+
+    // MARK: Tool
+
+    func applyTool(style: BrushStyle, brush: Brush, colorIndex: Int, erasing: Bool) {
+        if erasing {
+            canvas.tool = PKEraserTool(.bitmap)   // erases ink only; the fill layer stays
+        } else {
+            canvas.tool = PKInkingTool(style.inkType,
+                                       color: UIColor(Palette.color(at: colorIndex)),
+                                       width: brush.width)
+        }
+    }
+
+    // MARK: Fill (undoable via the canvas's undo manager, interleaved with strokes)
+
+    func applyFill(_ index: Int?) {
+        let previous = fillColorIndex
+        canvas.undoManager?.registerUndo(withTarget: self) { $0.applyFill(previous) }
+        fillColorIndex = index
+        bump()
+    }
+
+    // MARK: Edits
+
+    func undo() { canvas.undoManager?.undo(); bump() }
+
+    func snapshot() -> DoodleSnapshot { DoodleSnapshot(drawing: canvas.drawing, fill: fillColorIndex) }
+
+    func clear() {
+        canvas.drawing = PKDrawing()
+        fillColorIndex = nil
+        canvas.undoManager?.removeAllActions()
+        bump()
+    }
+
+    func restore(_ snapshot: DoodleSnapshot) {
+        canvas.drawing = snapshot.drawing
+        fillColorIndex = snapshot.fill
+        canvas.undoManager?.removeAllActions()
+        bump()
+    }
+
+    func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) { bump() }
+
+    private func bump() {
+        isEmpty = canvas.drawing.strokes.isEmpty && fillColorIndex == nil
+        canUndo = canvas.undoManager?.canUndo ?? false
+        changeCount &+= 1
+    }
+
+    // MARK: Bake
+
+    /// board + fill + native ink, composited at widget pixels → a widget-safe JPEG.
+    @MainActor
+    func bakedJPEG(boardColor: UIColor, targetPixels: CGFloat) -> Data? {
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return nil }
+        let scale = targetPixels / max(canvasSize.width, canvasSize.height)   // cap the longer side
+        let pixelSize = CGSize(width: canvasSize.width * scale, height: canvasSize.height * scale)
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.scale = 1
+        format.opaque = true
+        let image = UIGraphicsImageRenderer(size: pixelSize, format: format).image { ctx in
+            boardColor.setFill()
+            ctx.fill(CGRect(origin: .zero, size: pixelSize))
+            if let fillColorIndex {
+                UIColor(Palette.color(at: fillColorIndex)).setFill()
+                ctx.fill(CGRect(origin: .zero, size: pixelSize))
+            }
+            let ink = canvas.drawing.image(from: CGRect(origin: .zero, size: canvasSize), scale: scale)
+            ink.draw(in: CGRect(origin: .zero, size: pixelSize))
+        }
+        return image.jpegData(compressionQuality: 0.9)
+    }
 }
 
-/// A full snapshot of the doodle, used to restore after a clear (undo toast).
-private struct DoodleSnapshot {
-    var strokes: [DoodleStroke]
-    var fill: Int?
-    var history: [DoodleAction]
+/// Thin SwiftUI wrapper — the controller owns and configures the canvas.
+private struct PencilCanvas: UIViewRepresentable {
+    let controller: DoodleCanvasController
+    func makeUIView(context: Context) -> PKCanvasView { controller.canvas }
+    func updateUIView(_ uiView: PKCanvasView, context: Context) {}
 }
 
 struct DoodleComposerView: View {
@@ -76,17 +170,11 @@ struct DoodleComposerView: View {
     // Shared with the wordmark + dots picker — pick a color, the logo follows.
     @AppStorage("accentColorIndex") private var selectedColorIndex = 0
 
-    @State private var strokes: [DoodleStroke] = []
-    @State private var currentPoints: [CGPoint] = []
-    @State private var fillColorIndex: Int?              // long-press flood fill
-    @State private var history: [DoodleAction] = []      // undo stack (strokes + fills)
+    @StateObject private var canvas = DoodleCanvasController()
     @State private var brush: Brush = .medium
     @State private var brushStyle: BrushStyle = .pen
     @State private var isErasing = false
-    @State private var canvasSize: CGSize = .zero
-
-    @State private var longPressFilled = false           // suppresses the stroke a fill rode in on
-    @State private var clearedSnapshot: DoodleSnapshot?  // for the clear → undo toast
+    @State private var clearedSnapshot: DoodleSnapshot?   // for the clear → undo toast
 
     @State private var showRecipientPicker = false
     @State private var pendingPhoto: Data?
@@ -108,83 +196,44 @@ struct DoodleComposerView: View {
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
         }
-        .onAppear { paintHaptic.prepare(); fillHaptic.prepare(); sendHaptic.prepare() }
+        .onAppear { paintHaptic.prepare(); fillHaptic.prepare(); sendHaptic.prepare(); applyTool() }
+        .onChange(of: brushStyle) { _, _ in applyTool() }
+        .onChange(of: brush) { _, _ in applyTool() }
+        .onChange(of: isErasing) { _, _ in applyTool() }
+        .onChange(of: selectedColorIndex) { _, _ in applyTool() }
+        // Any edit (stroke, fill, undo) re-enables the send button.
+        .onChange(of: canvas.changeCount) { _, _ in if hasSent { hasSent = false } }
+    }
+
+    private func applyTool() {
+        canvas.applyTool(style: brushStyle, brush: brush, colorIndex: selectedColorIndex, erasing: isErasing)
     }
 
     // MARK: Canvas
-
-    /// Strokes plus the in-progress one (tagged eraser if the eraser is on).
-    private var liveStrokes: [DoodleStroke] {
-        guard !currentPoints.isEmpty else { return strokes }
-        return strokes + [DoodleStroke(points: currentPoints, colorIndex: selectedColorIndex,
-                                       widthFraction: brush.fraction, style: brushStyle, isEraser: isErasing)]
-    }
 
     private var board: some View {
         GeometryReader { proxy in
             let size = proxy.size
             ZStack {
-                StrokeCanvas(strokes: liveStrokes, fill: fillColorIndex, size: size)
-                if strokes.isEmpty && currentPoints.isEmpty && fillColorIndex == nil {
+                if let fill = canvas.fillColorIndex {
+                    Palette.color(at: fill)
+                        .transition(.opacity)   // flood-fill fades in / out
+                }
+                PencilCanvas(controller: canvas)
+                if canvas.isEmpty {
                     ComposerEmptyState(systemImage: "scribble.variable", title: "draw something")
                         .allowsHitTesting(false)
                 }
             }
             .frame(width: size.width, height: size.height)
-            .contentShape(Rectangle())
-            .gesture(drawGesture(size: size))
-            .simultaneousGesture(fillLongPress)   // hold to flood-fill with the chosen color
-            .onAppear { canvasSize = proxy.size }
-            .onChange(of: proxy.size) { _, new in canvasSize = new }
+            .onAppear { canvas.canvasSize = size }
+            .onChange(of: size) { _, new in canvas.canvasSize = new }
         }
-        // Square, matching the dots and photo boards so the canvas is the same size
-        // across all three tabs. The widget fits (never crops) the square doodle and
-        // its panel background matches, so the tiny letterbox is invisible. The dark
-        // board is the permanent backdrop; flood-fill + strokes live in the Canvas above.
+        // Square, matching the dots and photo boards. The dark board is the permanent
+        // backdrop; the flood-fill sits above it and the native ink above that.
         .aspectRatio(1, contentMode: .fit)
         .background(RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Palette.boardBackground))
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-    }
-
-    // MARK: Gestures
-
-    private func drawGesture(size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                guard !longPressFilled, size.width > 0, size.height > 0 else { return }
-                let p = CGPoint(x: min(max(value.location.x / size.width, 0), 1),
-                                y: min(max(value.location.y / size.height, 0), 1))
-                currentPoints.append(p)
-            }
-            .onEnded { _ in
-                if longPressFilled { longPressFilled = false; currentPoints = []; return }
-                guard !currentPoints.isEmpty else { return }
-                strokes.append(DoodleStroke(points: currentPoints, colorIndex: selectedColorIndex,
-                                            widthFraction: brush.fraction, style: brushStyle, isEraser: isErasing))
-                history.append(.stroke)
-                currentPoints = []
-                paintHaptic.impactOccurred(intensity: 0.5)
-                paintHaptic.prepare()
-                if hasSent { hasSent = false }
-            }
-    }
-
-    /// Press and hold → flood the whole canvas with the selected color. `maximumDistance`
-    /// keeps it from firing once you start actually drawing (that becomes a stroke).
-    private var fillLongPress: some Gesture {
-        LongPressGesture(minimumDuration: 0.4, maximumDistance: 18)
-            .onEnded { _ in fillCanvas() }
-    }
-
-    private func fillCanvas() {
-        longPressFilled = true          // drop the dot the drag started on this touch
-        currentPoints = []
-        if isErasing { isErasing = false }
-        history.append(.fill(previous: fillColorIndex))
-        fillHaptic.impactOccurred()
-        fillHaptic.prepare()
-        fillColorIndex = selectedColorIndex   // animated by the board's .animation(value:)
-        if hasSent { hasSent = false }
     }
 
     // MARK: Controls
@@ -196,10 +245,11 @@ struct DoodleComposerView: View {
                     swatch(index)
                 }
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 brushButton
                 styleButton
                 eraserButton
+                fillButton
                 undoButton
                 clearButton
             }
@@ -227,6 +277,8 @@ struct DoodleComposerView: View {
             reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.2, dampingFraction: 0.75),
             value: selectedColorIndex
         )
+        .accessibilityLabel(Palette.name(at: index))
+        .accessibilityAddTraits(selectedColorIndex == index ? .isSelected : [])
     }
 
     private func toolBackground(_ active: Bool) -> some View {
@@ -243,6 +295,7 @@ struct DoodleComposerView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("brush size")
     }
 
     private func cycleBrush() {
@@ -255,7 +308,7 @@ struct DoodleComposerView: View {
         }
     }
 
-    /// Cycles the brush style: pen → crayon → watercolor.
+    /// Cycles the native ink: pen → crayon → watercolor.
     private var styleButton: some View {
         Button { cycleStyle() } label: {
             ZStack {
@@ -268,6 +321,7 @@ struct DoodleComposerView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("brush style")
     }
 
     private func cycleStyle() {
@@ -291,12 +345,37 @@ struct DoodleComposerView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("eraser")
+        .accessibilityAddTraits(isErasing ? .isSelected : [])
     }
 
     private func toggleEraser() {
         paintHaptic.impactOccurred()
         paintHaptic.prepare()
         withAnimation(Motion.settle) { isErasing.toggle() }
+    }
+
+    /// Flood-fill the whole canvas with the selected color. (Moved from a long-press to
+    /// a button because the PencilKit canvas captures touches to draw.)
+    private var fillButton: some View {
+        Button { fillCanvas() } label: {
+            ZStack {
+                toolBackground(false)
+                Image(systemName: "drop.fill")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Palette.color(at: selectedColorIndex))
+            }
+            .frame(maxWidth: .infinity).frame(height: 52)
+        }
+        .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("fill background")
+    }
+
+    private func fillCanvas() {
+        fillHaptic.impactOccurred()
+        fillHaptic.prepare()
+        if isErasing { withAnimation(Motion.settle) { isErasing = false } }
+        withAnimation(.easeOut(duration: 0.2)) { canvas.applyFill(selectedColorIndex) }
     }
 
     private var undoButton: some View {
@@ -310,21 +389,16 @@ struct DoodleComposerView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
-        .disabled(history.isEmpty)
-        .opacity(history.isEmpty ? 0.4 : 1)
+        .disabled(!canvas.canUndo)
+        .opacity(canvas.canUndo ? 1 : 0.4)
+        .accessibilityLabel("undo")
     }
 
     private func undo() {
-        guard let last = history.popLast() else { return }
+        guard canvas.canUndo else { return }
         paintHaptic.impactOccurred(intensity: 0.6)
         paintHaptic.prepare()
-        withAnimation(.easeOut(duration: 0.15)) {
-            switch last {
-            case .stroke:               if !strokes.isEmpty { strokes.removeLast() }
-            case .fill(let previous):   fillColorIndex = previous
-            }
-        }
-        if hasSent { hasSent = false }
+        withAnimation(.easeOut(duration: 0.15)) { canvas.undo() }
     }
 
     private var clearButton: some View {
@@ -338,25 +412,20 @@ struct DoodleComposerView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
-        .disabled(isEmptyCanvas)
-        .opacity(isEmptyCanvas ? 0.4 : 1)
+        .disabled(canvas.isEmpty)
+        .opacity(canvas.isEmpty ? 0.4 : 1)
+        .accessibilityLabel("clear")
     }
-
-    private var isEmptyCanvas: Bool { strokes.isEmpty && fillColorIndex == nil }
 
     /// Clear the canvas and offer an undo toast.
     private func clear() {
-        guard !isEmptyCanvas else { return }
-        clearedSnapshot = DoodleSnapshot(strokes: strokes, fill: fillColorIndex, history: history)
+        guard !canvas.isEmpty else { return }
+        clearedSnapshot = canvas.snapshot()
         fillHaptic.impactOccurred(intensity: 0.7)
         fillHaptic.prepare()
         isErasing = false
         hasSent = false
-        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .easeOut(duration: 0.2)) {
-            strokes = []
-            fillColorIndex = nil
-        }
-        history = []
+        withAnimation(.easeOut(duration: 0.2)) { canvas.clear() }
         presentClearedToast()
     }
 
@@ -371,10 +440,8 @@ struct DoodleComposerView: View {
         paintHaptic.impactOccurred()
         paintHaptic.prepare()
         withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 0.78)) {
-            strokes = snapshot.strokes
-            fillColorIndex = snapshot.fill
+            canvas.restore(snapshot)
         }
-        history = snapshot.history
         clearedSnapshot = nil
         hasSent = false
     }
@@ -384,7 +451,7 @@ struct DoodleComposerView: View {
     /// Nothing to send: an empty canvas, the same doodle we just sent, or (when you
     /// have friends) nobody picked in the strip.
     private var sendDisabled: Bool {
-        isEmptyCanvas || hasSent
+        canvas.isEmpty || hasSent
             || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
     }
 
@@ -428,7 +495,10 @@ struct DoodleComposerView: View {
     }
 
     private func attemptSend() {
-        guard let data = renderJPEG() else { return }
+        guard let data = renderJPEG() else {
+            appModel.showToast("couldn't prepare that doodle", icon: "exclamationmark.triangle.fill")
+            return
+        }
         pendingPhoto = data
         if SendFlow.useInlineRecipients {
             finalizeSend(to: appModel.canPickRecipients ? appModel.resolvedRecipientIDs : [])
@@ -459,185 +529,8 @@ struct DoodleComposerView: View {
         }
     }
 
-    /// The scribble → a widget-safe JPEG (board/fill + strokes), baked at widget px.
     @MainActor
     private func renderJPEG() -> Data? {
-        guard !isEmptyCanvas, canvasSize.width > 0, canvasSize.height > 0 else { return nil }
-        let size = canvasSize
-        let composite = ZStack {
-            Palette.boardBackground
-            StrokeCanvas(strokes: strokes, fill: fillColorIndex, size: size)
-        }
-        .frame(width: size.width, height: size.height)
-
-        let renderer = ImageRenderer(content: composite)
-        // Cap the LONGER side at targetPixels so the widget never loads too much.
-        renderer.scale = WidgetMetrics.targetPixels / max(size.width, size.height)
-        renderer.isOpaque = true
-        return renderer.uiImage?.jpegData(compressionQuality: 0.9)
+        canvas.bakedJPEG(boardColor: UIColor(Palette.boardBackground), targetPixels: WidgetMetrics.targetPixels)
     }
-}
-
-// MARK: - Stroke rendering (shared by the live board, the bake, and the fall)
-
-/// Draws a set of strokes into a transparent Canvas. Whatever sits behind it (the
-/// board fill) shows through eraser cuts. Reused verbatim everywhere a doodle is
-/// drawn, so on-screen, baked, and falling renders match exactly.
-private struct StrokeCanvas: View {
-    let strokes: [DoodleStroke]
-    var fill: Int? = nil
-    let size: CGSize
-
-    var body: some View {
-        Canvas { context, csize in
-            // The flood-fill lives INSIDE the erasable layer (drawn first, behind the
-            // strokes), so the eraser's destinationOut cuts through the fill too and
-            // reveals the dark board behind. The board is the permanent backdrop.
-            if let fill {
-                context.fill(Path(CGRect(origin: .zero, size: csize)),
-                             with: .color(Palette.color(at: fill)))
-            }
-            for (index, stroke) in strokes.enumerated() {
-                let pts = stroke.points.map { CGPoint(x: $0.x * csize.width, y: $0.y * csize.height) }
-                guard !pts.isEmpty else { continue }
-                let lineWidth = max(stroke.widthFraction * csize.width, 1)
-                if stroke.isEraser {
-                    eraseStroke(into: &context, points: pts, width: lineWidth)
-                } else {
-                    drawStroke(into: &context, points: pts, width: lineWidth,
-                               color: Palette.color(at: stroke.colorIndex),
-                               style: stroke.style, seed: index &* 1031)
-                }
-            }
-        }
-        .frame(width: size.width, height: size.height)
-    }
-}
-
-// MARK: - Stroke styles
-//
-// Each style draws purely from the stroke's points + a deterministic seed, so the
-// live Canvas and the ImageRenderer bake produce identical pixels.
-
-private func drawStroke(into context: inout GraphicsContext, points pts: [CGPoint],
-                        width: CGFloat, color: Color, style: BrushStyle, seed: Int) {
-    switch style {
-    case .pen:        drawPen(into: &context, pts: pts, width: width, color: color)
-    case .crayon:     drawCrayon(into: &context, pts: pts, width: width, color: color, seed: seed)
-    case .watercolor: drawWatercolor(into: &context, pts: pts, width: width, color: color)
-    }
-}
-
-/// Cuts through everything drawn before it, revealing the board / fill behind.
-private func eraseStroke(into context: inout GraphicsContext, points pts: [CGPoint], width: CGFloat) {
-    context.blendMode = .destinationOut
-    if pts.count == 1 {
-        let r = width / 2
-        context.fill(Path(ellipseIn: CGRect(x: pts[0].x - r, y: pts[0].y - r, width: width, height: width)),
-                     with: .color(.black))
-    } else {
-        context.stroke(polyline(pts), with: .color(.black),
-                       style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
-    }
-    context.blendMode = .normal
-}
-
-/// Solid round-cap ink — the original brush.
-private func drawPen(into context: inout GraphicsContext, pts: [CGPoint], width: CGFloat, color: Color) {
-    if pts.count == 1 {
-        let r = width / 2
-        context.fill(Path(ellipseIn: CGRect(x: pts[0].x - r, y: pts[0].y - r, width: width, height: width)),
-                     with: .color(color))
-    } else {
-        context.stroke(polyline(pts), with: .color(color),
-                       style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
-    }
-}
-
-/// Waxy crayon: a soft base pass plus scattered grain so coverage is uneven and the
-/// edges read rough — paper showing through, like a real crayon.
-private func drawCrayon(into context: inout GraphicsContext, pts: [CGPoint],
-                        width w: CGFloat, color: Color, seed: Int) {
-    if pts.count == 1 {
-        let r = w / 2
-        context.fill(Path(ellipseIn: CGRect(x: pts[0].x - r, y: pts[0].y - r, width: w, height: w)),
-                     with: .color(color.opacity(0.5)))
-    } else {
-        context.stroke(polyline(pts), with: .color(color.opacity(0.5)),
-                       style: StrokeStyle(lineWidth: w, lineCap: .round, lineJoin: .round))
-    }
-    let dense = densify(pts, spacing: max(w * 0.4, 1.2))
-    let baseR = max(w * 0.17, 0.6)
-    for (i, p) in dense.enumerated() {
-        for k in 0..<2 {
-            let s = seed &+ i &* 17 &+ k &* 101
-            let jx = (pseudo(s) - 0.5) * w
-            let jy = (pseudo(s &+ 53) - 0.5) * w
-            let r = baseR * (0.55 + pseudo(s &+ 91))
-            let op = 0.22 + pseudo(s &+ 7) * 0.38
-            context.fill(Path(ellipseIn: CGRect(x: p.x + jx - r, y: p.y + jy - r, width: r * 2, height: r * 2)),
-                         with: .color(color.opacity(op)))
-        }
-    }
-}
-
-/// Watercolor: a wide, soft, translucent wash plus a denser core, both blurred so
-/// edges bleed. Overlapping strokes build up, like layered washes.
-private func drawWatercolor(into context: inout GraphicsContext, pts: [CGPoint],
-                            width w: CGFloat, color: Color) {
-    func paint(into ctx: inout GraphicsContext, scale: CGFloat) {
-        if pts.count == 1 {
-            let r = w * scale / 2
-            ctx.fill(Path(ellipseIn: CGRect(x: pts[0].x - r, y: pts[0].y - r, width: w * scale, height: w * scale)),
-                     with: .color(color))
-        } else {
-            ctx.stroke(polyline(pts), with: .color(color),
-                       style: StrokeStyle(lineWidth: w * scale, lineCap: .round, lineJoin: .round))
-        }
-    }
-    context.drawLayer { layer in            // soft outer wash
-        layer.addFilter(.blur(radius: w * 0.55))
-        layer.opacity = 0.45
-        paint(into: &layer, scale: 1.6)
-    }
-    context.drawLayer { layer in            // denser core
-        layer.addFilter(.blur(radius: w * 0.2))
-        layer.opacity = 0.5
-        paint(into: &layer, scale: 0.85)
-    }
-}
-
-private func polyline(_ pts: [CGPoint]) -> Path {
-    var path = Path()
-    guard let first = pts.first else { return path }
-    path.move(to: first)
-    for p in pts.dropFirst() { path.addLine(to: p) }
-    return path
-}
-
-/// Evenly spaced points along the polyline, for laying down crayon grain.
-private func densify(_ pts: [CGPoint], spacing: CGFloat) -> [CGPoint] {
-    guard pts.count > 1, spacing > 0 else { return pts }
-    var out: [CGPoint] = [pts[0]]
-    var carry: CGFloat = 0
-    for i in 1..<pts.count {
-        let a = pts[i - 1], b = pts[i]
-        let dx = b.x - a.x, dy = b.y - a.y
-        let segLen = (dx * dx + dy * dy).squareRoot()
-        guard segLen > 0 else { continue }
-        var d = spacing - carry
-        while d <= segLen {
-            let t = d / segLen
-            out.append(CGPoint(x: a.x + dx * t, y: a.y + dy * t))
-            d += spacing
-        }
-        carry = segLen - (d - spacing)
-    }
-    return out
-}
-
-/// Deterministic hash → [0,1). Classic `fract(sin(x))`; stable across renders.
-private func pseudo(_ n: Int) -> CGFloat {
-    let s = sin(Double(n) * 12.9898) * 43_758.5453
-    return CGFloat(s - floor(s))
 }
