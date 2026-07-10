@@ -135,10 +135,20 @@ private final class DoodleCanvasController: NSObject, ObservableObject, PKCanvas
 
     /// board + fill + native ink, composited at widget pixels → a widget-safe JPEG.
     @MainActor
-    func bakedJPEG(boardColor: UIColor, targetPixels: CGFloat) -> Data? {
+    func bakedJPEG(boardColor: UIColor, targetPixels: CGFloat, caption: CaptionOverlay?) -> Data? {
         guard canvasSize.width > 0, canvasSize.height > 0 else { return nil }
         let scale = targetPixels / max(canvasSize.width, canvasSize.height)   // cap the longer side
         let pixelSize = CGSize(width: canvasSize.width * scale, height: canvasSize.height * scale)
+
+        // Pre-render the caption chip (same view as on-screen) at bake scale, so it's WYSIWYG.
+        var captionImage: UIImage?
+        if let caption, !caption.isBlank {
+            let renderer = ImageRenderer(content: CaptionChip(caption: caption,
+                                                              maxWidth: canvasSize.width * 0.78))
+            renderer.scale = scale
+            captionImage = renderer.uiImage
+        }
+
         let format = UIGraphicsImageRendererFormat.preferred()
         format.scale = 1
         format.opaque = true
@@ -151,6 +161,12 @@ private final class DoodleCanvasController: NSObject, ObservableObject, PKCanvas
             }
             let ink = canvas.drawing.image(from: CGRect(origin: .zero, size: canvasSize), scale: scale)
             ink.draw(in: CGRect(origin: .zero, size: pixelSize))
+            if let captionImage, let caption {
+                let drawSize = CGSize(width: captionImage.size.width * scale, height: captionImage.size.height * scale)
+                let center = CGPoint(x: caption.position.x * pixelSize.width, y: caption.position.y * pixelSize.height)
+                captionImage.draw(in: CGRect(x: center.x - drawSize.width / 2, y: center.y - drawSize.height / 2,
+                                             width: drawSize.width, height: drawSize.height))
+            }
         }
         return image.jpegData(compressionQuality: 0.9)
     }
@@ -175,6 +191,12 @@ struct DoodleComposerView: View {
     @State private var brushStyle: BrushStyle = .pen
     @State private var isErasing = false
     @State private var clearedSnapshot: DoodleSnapshot?   // for the clear → undo toast
+
+    // Free-dragged text caption, baked into the sent doodle (see Caption.swift).
+    @State private var caption: CaptionOverlay?
+    @State private var clearedCaption: CaptionOverlay?
+    @State private var editingCaption = false
+    @State private var captionDragFrom: CGPoint?   // chip position when the drag began (nil = not dragging)
 
     @State private var showRecipientPicker = false
     @State private var pendingPhoto: Data?
@@ -203,10 +225,47 @@ struct DoodleComposerView: View {
         .onChange(of: selectedColorIndex) { _, _ in applyTool() }
         // Any edit (stroke, fill, undo) re-enables the send button.
         .onChange(of: canvas.changeCount) { _, _ in if hasSent { hasSent = false } }
+        // Full-screen so the frost covers EVERYTHING (tab toggle included). Presented
+        // with animations disabled — the editor fades itself in/out; the system slide
+        // would read as a modal, and this isn't one.
+        .fullScreenCover(isPresented: $editingCaption) {
+            CaptionEditor(
+                caption: Binding(get: { caption ?? CaptionOverlay(text: "", colorIndex: selectedColorIndex) },
+                                 set: { caption = $0 }),
+                onDone: commitCaption,
+                onRemove: removeCaption
+            )
+            .presentationBackground(.clear)
+        }
     }
 
     private func applyTool() {
         canvas.applyTool(style: brushStyle, brush: brush, colorIndex: selectedColorIndex, erasing: isErasing)
+    }
+
+    private func startCaption() {
+        if caption == nil { caption = CaptionOverlay(text: "", colorIndex: selectedColorIndex) }
+        presentEditor(true)
+    }
+
+    private func commitCaption() {
+        presentEditor(false)
+        if caption?.isBlank == true { caption = nil }
+        if hasSent { hasSent = false }
+    }
+
+    private func removeCaption() {
+        caption = nil
+        presentEditor(false)
+        if hasSent { hasSent = false }
+    }
+
+    /// Presents/dismisses the caption cover with the system animation suppressed —
+    /// the editor runs its own fade (see CaptionEditor).
+    private func presentEditor(_ show: Bool) {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { editingCaption = show }
     }
 
     // MARK: Canvas
@@ -220,12 +279,15 @@ struct DoodleComposerView: View {
                         .transition(.opacity)   // flood-fill fades in / out
                 }
                 PencilCanvas(controller: canvas)
-                if canvas.isEmpty {
+                if canvas.isEmpty && caption == nil {
                     ComposerEmptyState(systemImage: "scribble.variable", title: "draw something")
                         .allowsHitTesting(false)
                 }
+                captionOverlay(side: size.width)
+                textToolButton
             }
             .frame(width: size.width, height: size.height)
+            .coordinateSpace(name: "doodleFrame")
             .onAppear { canvas.canvasSize = size }
             .onChange(of: size) { _, new in canvas.canvasSize = new }
         }
@@ -234,6 +296,52 @@ struct DoodleComposerView: View {
         .aspectRatio(1, contentMode: .fit)
         .background(RoundedRectangle(cornerRadius: 28, style: .continuous).fill(Palette.boardBackground))
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+
+    /// The free-dragged caption over the doodle (hidden while editing). Its own gesture
+    /// wins over the PencilKit canvas, so touching the chip moves it instead of drawing.
+    /// Tap to re-edit; drag past 6pt to move (the threshold is what lets the tap land).
+    @ViewBuilder
+    private func captionOverlay(side: CGFloat) -> some View {
+        if let cap = caption, !editingCaption, !cap.isBlank {
+            CaptionChip(caption: cap, maxWidth: side * 0.78)
+                .scaleEffect(captionDragFrom != nil && !reduceMotion ? 1.04 : 1)   // picked-up lift
+                .position(x: cap.position.x * side, y: cap.position.y * side)
+                .onTapGesture { startCaption() }
+                .gesture(captionDrag(side: side))
+                .animation(Motion.crisp(0.18), value: captionDragFrom != nil)
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
+        }
+    }
+
+    /// Drag by translation from where the chip STARTED (in the fixed frame space) —
+    /// grab it anywhere and it never jumps to recenter under the finger. The 6pt
+    /// minimum leaves stationary touches to the tap gesture (tap = re-edit).
+    private func captionDrag(side: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named("doodleFrame"))
+            .onChanged { value in
+                guard side > 0, let cap = caption else { return }
+                let from = captionDragFrom ?? cap.position
+                captionDragFrom = from
+                caption?.position = CGPoint(
+                    x: min(max(from.x + value.translation.width / side, 0.12), 0.88),
+                    y: min(max(from.y + value.translation.height / side, 0.08), 0.92))
+                if hasSent { hasSent = false }
+            }
+            .onEnded { _ in captionDragFrom = nil }
+    }
+
+    /// The floating "Aa" text tool, top-right of the board. (A button, not a canvas tap —
+    /// the PencilKit canvas would otherwise start a stroke.)
+    private var textToolButton: some View {
+        VStack {
+            HStack {
+                Spacer()
+                CaptionToolButton { startCaption() }
+            }
+            Spacer()
+        }
+        .padding(12)
     }
 
     // MARK: Controls
@@ -412,20 +520,26 @@ struct DoodleComposerView: View {
             .frame(maxWidth: .infinity).frame(height: 52)
         }
         .buttonStyle(SquishyButtonStyle())
-        .disabled(canvas.isEmpty)
-        .opacity(canvas.isEmpty ? 0.4 : 1)
+        .disabled(nothingToClear)
+        .opacity(nothingToClear ? 0.4 : 1)
         .accessibilityLabel("clear")
     }
 
+    private var nothingToClear: Bool { canvas.isEmpty && caption == nil }
+
     /// Clear the canvas and offer an undo toast.
     private func clear() {
-        guard !canvas.isEmpty else { return }
+        guard !nothingToClear else { return }
         clearedSnapshot = canvas.snapshot()
+        clearedCaption = caption
         fillHaptic.impactOccurred(intensity: 0.7)
         fillHaptic.prepare()
         isErasing = false
         hasSent = false
-        withAnimation(.easeOut(duration: 0.2)) { canvas.clear() }
+        withAnimation(.easeOut(duration: 0.2)) {
+            canvas.clear()
+            caption = nil
+        }
         presentClearedToast()
     }
 
@@ -441,8 +555,10 @@ struct DoodleComposerView: View {
         paintHaptic.prepare()
         withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.3, dampingFraction: 0.78)) {
             canvas.restore(snapshot)
+            caption = clearedCaption
         }
         clearedSnapshot = nil
+        clearedCaption = nil
         hasSent = false
     }
 
@@ -451,7 +567,7 @@ struct DoodleComposerView: View {
     /// Nothing to send: an empty canvas, the same doodle we just sent, or (when you
     /// have friends) nobody picked in the strip.
     private var sendDisabled: Bool {
-        canvas.isEmpty || hasSent
+        (canvas.isEmpty && (caption?.isBlank ?? true)) || hasSent
             || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
     }
 
@@ -531,6 +647,7 @@ struct DoodleComposerView: View {
 
     @MainActor
     private func renderJPEG() -> Data? {
-        canvas.bakedJPEG(boardColor: UIColor(Palette.boardBackground), targetPixels: WidgetMetrics.targetPixels)
+        canvas.bakedJPEG(boardColor: UIColor(Palette.boardBackground),
+                         targetPixels: WidgetMetrics.targetPixels, caption: caption)
     }
 }

@@ -65,6 +65,11 @@ struct PhotoComposerView: View {
     @State private var hintTask: Task<Void, Never>?
     private let doodleHintBudget = 3
 
+    // Free-dragged text caption, baked into the sent photo (see Caption.swift).
+    @State private var caption: CaptionOverlay?
+    @State private var editingCaption = false
+    @State private var captionDragFrom: CGPoint?   // chip position when the drag began (nil = not dragging)
+
     /// Carousel order after the plain photo (time, place).
     private let pillPages = StickerKind.carousel
     private let penWidthFraction: CGFloat = 0.02
@@ -103,6 +108,43 @@ struct PhotoComposerView: View {
         // The user engaged the doodle (opened the tray or paged away) — drop the nudge.
         .onChange(of: isDrawing) { _, drawing in if drawing { cancelDoodleHint() } }
         .onChange(of: pillPage) { _, page in if page != 0 { cancelDoodleHint() } }
+        // Full-screen so the frost covers EVERYTHING (tab toggle included). Presented
+        // with animations disabled — the editor fades itself in/out; the system slide
+        // would read as a modal, and this isn't one.
+        .fullScreenCover(isPresented: $editingCaption) {
+            CaptionEditor(
+                caption: Binding(get: { caption ?? CaptionOverlay(text: "", colorIndex: penColorIndex) },
+                                 set: { caption = $0 }),
+                onDone: commitCaption,
+                onRemove: removeCaption
+            )
+            .presentationBackground(.clear)
+        }
+    }
+
+    private func startCaption() {
+        if caption == nil { caption = CaptionOverlay(text: "", colorIndex: penColorIndex) }
+        presentEditor(true)
+    }
+
+    private func commitCaption() {
+        presentEditor(false)
+        if caption?.isBlank == true { caption = nil }
+        if hasSent { hasSent = false }
+    }
+
+    private func removeCaption() {
+        caption = nil
+        presentEditor(false)
+        if hasSent { hasSent = false }
+    }
+
+    /// Presents/dismisses the caption cover with the system animation suppressed —
+    /// the editor runs its own fade (see CaptionEditor).
+    private func presentEditor(_ show: Bool) {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { editingCaption = show }
     }
 
     /// Start the live camera only when the tab is active, frontmost, and we're not
@@ -128,8 +170,10 @@ struct PhotoComposerView: View {
                     photoImage(image, side: side)
                     doodleOverlay(side: side)
                     pillOverlay(side: side)
+                    captionOverlay(side: side)
                     if pillPage == 0 && !isDrawing { doodleHintChevron }
                     doodleTray
+                    textToolButton
                 } else {
                     cameraArea(side: side)
                 }
@@ -554,6 +598,7 @@ struct PhotoComposerView: View {
             currentStroke = []
             isDrawing = false
             hasSent = false
+            caption = nil
         }
     }
 
@@ -698,15 +743,61 @@ struct PhotoComposerView: View {
         }
     }
 
+    /// The free-dragged text caption over the photo (hidden while editing — the editor
+    /// shows the text then). Baked into the sent JPEG regardless of the current page.
+    /// Tap to re-edit; drag past 6pt to move (the threshold is what lets the tap land).
+    @ViewBuilder
+    private func captionOverlay(side: CGFloat) -> some View {
+        if let cap = caption, !editingCaption, !cap.isBlank {
+            CaptionChip(caption: cap, maxWidth: side * 0.78)
+                .scaleEffect(captionDragFrom != nil && !reduceMotion ? 1.04 : 1)   // picked-up lift
+                .position(x: cap.position.x * side, y: cap.position.y * side)
+                .onTapGesture { startCaption() }
+                .gesture(captionDrag(side: side))
+                .animation(Motion.crisp(0.18), value: captionDragFrom != nil)
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.96).combined(with: .opacity))
+        }
+    }
+
+    /// Drag by translation from where the chip STARTED (in the fixed frame space) —
+    /// grab it anywhere and it never jumps to recenter under the finger. The 6pt
+    /// minimum leaves stationary touches to the tap gesture (tap = re-edit).
+    private func captionDrag(side: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(stickerSpace))
+            .onChanged { value in
+                guard side > 0, let cap = caption else { return }
+                let from = captionDragFrom ?? cap.position
+                captionDragFrom = from
+                caption?.position = CGPoint(
+                    x: min(max(from.x + value.translation.width / side, 0.12), 0.88),
+                    y: min(max(from.y + value.translation.height / side, 0.08), 0.92))
+                if hasSent { hasSent = false }
+            }
+            .onEnded { _ in captionDragFrom = nil }
+    }
+
+    /// The floating "Aa" text tool, top-right of the photo.
+    private var textToolButton: some View {
+        VStack {
+            HStack {
+                Spacer()
+                CaptionToolButton { startCaption() }
+            }
+            Spacer()
+        }
+        .padding(12)
+    }
+
     /// The current pill, if any — baked over the photo on its page.
     private var activeStickers: [PhotoSticker] {
         guard let kind = currentKind, let pill = pills[kind] else { return [] }
         return [pill]
     }
 
-    /// Is there anything to bake over the photo on the current page (pill or doodle)?
+    /// Is there anything to bake over the photo (pill, doodle, or caption)?
     private var hasOverlay: Bool {
-        pillPage == 0 ? !doodleStrokes.isEmpty : !activeStickers.isEmpty
+        let pageOverlay = pillPage == 0 ? !doodleStrokes.isEmpty : !activeStickers.isEmpty
+        return pageOverlay || !(caption?.isBlank ?? true)
     }
 
     /// The center-cropped square → downscaled, widget-safe JPEG, with the current
@@ -735,6 +826,10 @@ struct PhotoComposerView: View {
                     StickerChip(icon: s.icon, text: s.text)
                         .position(x: s.position.x * side, y: s.position.y * side)
                 }
+            }
+            if let cap = caption, !cap.isBlank {
+                CaptionChip(caption: cap, maxWidth: side * 0.78)
+                    .position(x: cap.position.x * side, y: cap.position.y * side)
             }
         }
         .frame(width: side, height: side)
@@ -768,6 +863,7 @@ struct PhotoComposerView: View {
             currentStroke = []
             isDrawing = false
             hasSent = false
+            caption = nil
         }
         nudgeDoodleHint()
     }

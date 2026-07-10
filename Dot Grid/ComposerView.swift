@@ -49,6 +49,10 @@ struct ComposerView: View {
                 }
             }
             .padding(20)
+            // The caption editor's keyboard must never reflow the home layout — the
+            // board would shrink. (No other inline text input lives on this screen;
+            // sheets present separately and keep their own keyboard avoidance.)
+            .ignoresSafeArea(.keyboard)
         }
         .font(DotFont.ui(17))   // Hanken Grotesk is the default UI/body font
         .textCase(.lowercase)   // the whole app reads lowercase
