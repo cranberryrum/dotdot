@@ -41,6 +41,20 @@ struct DotGridWidgetView: View {
                 TokenBadge(token: drawing.token, size: 30)
                     .padding(12)
             }
+            // The emoji you reacted with, stuck on the dotdot like a sticker.
+            if let reaction = drawing?.myReaction {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Text(reaction)
+                            .font(.system(size: 17))
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(.black.opacity(0.45)))
+                        Spacer()
+                    }
+                }
+                .padding(12)
+            }
             if drawing == nil {
                 Text("dots & photos from\nfriends show up here")
                     .font(DotFont.mono(11, bold: true))
@@ -50,6 +64,8 @@ struct DotGridWidgetView: View {
             }
         }
         .containerBackground(for: .widget) { Theme.panel }
+        // Tapping the widget lands on the inbox's received feed — where the tray is.
+        .widgetURL(URL(string: "dotdot://inbox"))
     }
 
     @ViewBuilder

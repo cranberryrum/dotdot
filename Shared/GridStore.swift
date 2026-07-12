@@ -117,6 +117,49 @@ struct GridStore {
         encode(items, forKey: Self.sentHistoryKey)
     }
 
+    // MARK: - Reactions
+
+    /// Record MY reaction to a received dotdot (nil = un-react) everywhere that
+    /// drawing lives: the received feed, the sender's per-friend widget slot, and the
+    /// latest-from-anyone slot — so the widget badge and the tray stay in step.
+    /// Matched by (senderID, sentAt): the stable identity of a received dotdot.
+    func applyMyReaction(_ emoji: String?, senderID: String, sentAt: Date) {
+        func stamped(_ d: DisplayDrawing) -> DisplayDrawing {
+            guard d.senderID == senderID, d.sentAt == sentAt else { return d }
+            var updated = d
+            updated.myReaction = emoji
+            return updated
+        }
+        encode(receivedHistory().map(stamped), forKey: Self.receivedHistoryKey)
+        if let slot = decode(DisplayDrawing.self, forKey: Self.friendDisplayKey(senderID)) {
+            encode(stamped(slot), forKey: Self.friendDisplayKey(senderID))
+        }
+        if let latest = decode(DisplayDrawing.self, forKey: Self.latestReceivedKey) {
+            encode(stamped(latest), forKey: Self.latestReceivedKey)
+        }
+    }
+
+    /// Attach a friend's reaction to the dotdot I sent (the sent feed). Matched by
+    /// `messageID` when the drawing carried one; otherwise the nearest sent-time
+    /// within a small tolerance (dotdots sent before messageID shipped). One
+    /// reaction per person — a newer one replaces theirs.
+    func applyIncomingReaction(_ reaction: ReactionInfo, messageID: String?, drawingSentAt: Date) {
+        var items = sentHistory()
+        let index: Int?
+        if let messageID, let exact = items.firstIndex(where: { $0.id == messageID }) {
+            index = exact
+        } else {
+            index = items.indices
+                .filter { abs(items[$0].sentAt.timeIntervalSince(drawingSentAt)) < 5 }
+                .min { abs(items[$0].sentAt.timeIntervalSince(drawingSentAt))
+                     < abs(items[$1].sentAt.timeIntervalSince(drawingSentAt)) }
+        }
+        guard let index else { return }   // scrolled out of the capped history — drop
+        items[index].reactions.removeAll { $0.reactorID == reaction.reactorID }
+        items[index].reactions.insert(reaction, at: 0)
+        encode(items, forKey: Self.sentHistoryKey)
+    }
+
     // MARK: - Friend roster (drives the configurable widget's picker)
 
     func saveRoster(_ friends: [FriendInfo]) { encode(friends, forKey: Self.rosterKey) }

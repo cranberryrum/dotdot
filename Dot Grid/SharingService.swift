@@ -63,10 +63,12 @@ final class SharingService {
         static let friendship = "Friendship"
         static let inviteCode = "InviteCode"
         static let drawing = "Drawing"
+        static let reaction = "Reaction"
     }
 
     private let lastUserKey = "lastUserRecordName"
     private let lastFetchKey = "lastDrawingFetch"
+    private let lastReactionFetchKey = "lastReactionFetch"
     private let attemptsKey = "redeemAttempts"
     private let deviceIDKey = "dotdotDeviceID"
 
@@ -288,6 +290,17 @@ final class SharingService {
             }
         }
 
+        // Reactions I made, and reactions others made to my (now deleted) drawings.
+        for id in ids {
+            for predicate in [NSPredicate(format: "reactorID == %@", id),
+                              NSPredicate(format: "recipientID == %@", id)] {
+                let query = CKQuery(recordType: RT.reaction, predicate: predicate)
+                if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
+                    for recordID in results.map(\.0) { _ = try? await db.deleteRecord(withID: recordID) }
+                }
+            }
+        }
+
         // My profile.
         _ = try? await db.deleteRecord(withID: CKRecord.ID(recordName: userID))
 
@@ -295,6 +308,7 @@ final class SharingService {
         for id in ids {
             _ = try? await db.deleteSubscription(withID: "drawings-to-\(subscriptionIDComponent(id))")
             _ = try? await db.deleteSubscription(withID: "friendships-of-\(subscriptionIDComponent(id))")
+            _ = try? await db.deleteSubscription(withID: "reactions-to-\(subscriptionIDComponent(id))")
         }
     }
 
@@ -304,7 +318,8 @@ final class SharingService {
     /// Returns the recipient IDs that failed so the caller can re-queue them.
     /// Retries transient errors briefly.
     func sendMessage(kind: MessageKind, grid: Grid?, imageData: Data?,
-                     to recipientIDs: [String], from profile: Profile, senderID: String) async -> [String] {
+                     to recipientIDs: [String], from profile: Profile, senderID: String,
+                     messageID: String? = nil) async -> [String] {
         // For photos, stage the (already downscaled) JPEG to a temp file once; each
         // record gets its own CKAsset pointing at it.
         var assetURL: URL?
@@ -330,6 +345,9 @@ final class SharingService {
                 record["tokenColor"] = profile.token.colorIndex as CKRecordValue
                 record["sentAt"] = Date() as CKRecordValue
                 record["kind"] = kind.rawValue as CKRecordValue
+                // Stable cross-device ID reactions point back at (needs no index —
+                // it just rides the record). Same ID on every recipient's copy.
+                if let messageID { record["messageID"] = messageID as CKRecordValue }
                 if let gridData { record["gridData"] = gridData as CKRecordValue }
                 if let assetURL { record["imageAsset"] = CKAsset(fileURL: assetURL) }
                 _ = try await self.db.save(record)
@@ -372,6 +390,7 @@ final class SharingService {
                 colorIndex: record["tokenColor"] as? Int ?? 0
             )
             let kind = MessageKind(rawValue: record["kind"] as? String ?? "dots") ?? .dots
+            let messageID = record["messageID"] as? String
 
             let drawing: DisplayDrawing
             switch kind {
@@ -383,13 +402,13 @@ final class SharingService {
                       let data = try? Data(contentsOf: url)
                 else { continue }
                 drawing = kind == .doodle
-                    ? .doodle(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
-                    : .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
+                    ? .doodle(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                    : .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
             case .dots:
                 guard let data = record["gridData"] as? Data,
                       let grid = try? JSONDecoder().decode(Grid.self, from: data)
                 else { continue }
-                drawing = .dots(grid, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt)
+                drawing = .dots(grid, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
             }
             GridStore.shared.saveReceived(drawing)
             newest = max(newest, sentAt)
@@ -399,10 +418,86 @@ final class SharingService {
         return count
     }
 
+    // MARK: - Reactions
+
+    /// One reaction per (reactor, dotdot): the record name is deterministic, so
+    /// reacting again REPLACES the same record (and un-reacting deletes it).
+    private func reactionRecordID(reactorID: String, messageID: String?, drawingSentAt: Date) -> CKRecord.ID {
+        let key = messageID ?? "t\(Int(drawingSentAt.timeIntervalSince1970 * 1000))"
+        return CKRecord.ID(recordName: "reaction-\(recordNameComponent(reactorID))-\(key)")
+    }
+
+    /// Send (or replace) my emoji reaction to a dotdot. `recipientID` is the original
+    /// sender — the person who should see it on their sent feed. Returns success.
+    func sendReaction(emoji: String, messageID: String?, drawingSentAt: Date,
+                      to recipientID: String, from profile: Profile, reactorID: String) async -> Bool {
+        let recordID = reactionRecordID(reactorID: reactorID, messageID: messageID, drawingSentAt: drawingSentAt)
+        return await withBackoff(maxAttempts: 3) {
+            // Upsert: mutate the existing record if I reacted before, else create it.
+            let record = (try? await self.db.record(for: recordID)) ?? CKRecord(recordType: RT.reaction, recordID: recordID)
+            record["emoji"] = emoji as CKRecordValue
+            record["recipientID"] = recipientID as CKRecordValue
+            record["reactorID"] = reactorID as CKRecordValue
+            record["reactorName"] = profile.name as CKRecordValue
+            if let messageID { record["messageID"] = messageID as CKRecordValue }
+            record["drawingSentAt"] = drawingSentAt as CKRecordValue
+            // Bumped on every save so replacements clear the recipient's fetch mark.
+            record["sentAt"] = Date() as CKRecordValue
+            _ = try await self.db.save(record)
+        }
+    }
+
+    /// Un-react: best-effort delete of my reaction record.
+    func removeReaction(messageID: String?, drawingSentAt: Date, reactorID: String) async {
+        let recordID = reactionRecordID(reactorID: reactorID, messageID: messageID, drawingSentAt: drawingSentAt)
+        _ = try? await db.deleteRecord(withID: recordID)
+    }
+
+    /// Fetch reactions to dotdots I sent since the last fetch and attach them to the
+    /// sent feed. Mirrors `fetchIncoming` (high-water mark on the reaction's save time).
+    func fetchReactions(recipientIDs: [String]) async throws -> Int {
+        let defaults = UserDefaults.standard
+        let since = (defaults.object(forKey: lastReactionFetchKey) as? Date) ?? .distantPast
+
+        var recordsByID: [CKRecord.ID: CKRecord] = [:]
+        for id in Set(recipientIDs) {
+            let predicate = NSPredicate(format: "recipientID == %@ AND sentAt > %@", id, since as NSDate)
+            let query = CKQuery(recordType: RT.reaction, predicate: predicate)
+            query.sortDescriptors = [NSSortDescriptor(key: "sentAt", ascending: true)]
+            let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
+            for record in results.compactMap({ try? $0.1.get() }) {
+                recordsByID[record.recordID] = record
+            }
+        }
+
+        var newest = since
+        var count = 0
+        for record in recordsByID.values {
+            guard let emoji = record["emoji"] as? String,
+                  let reactorID = record["reactorID"] as? String else { continue }
+            let at = (record["sentAt"] as? Date) ?? Date()
+            let reaction = ReactionInfo(
+                emoji: emoji,
+                reactorID: reactorID,
+                reactorName: record["reactorName"] as? String ?? "friend",
+                at: at
+            )
+            GridStore.shared.applyIncomingReaction(
+                reaction,
+                messageID: record["messageID"] as? String,
+                drawingSentAt: (record["drawingSentAt"] as? Date) ?? .distantPast
+            )
+            newest = max(newest, at)
+            count += 1
+        }
+        if count > 0 { defaults.set(newest, forKey: lastReactionFetchKey) }
+        return count
+    }
+
     // MARK: - Subscription (push)
 
-    /// Subscribe to drawings addressed to me AND to new friendships involving me,
-    /// so both parties learn about a pairing in real time. Idempotent per user.
+    /// Subscribe to drawings addressed to me, new friendships involving me, AND
+    /// reactions to dotdots I sent — so both parties learn in real time. Idempotent.
     func ensureSubscription(userID: String, participantID: String) async {
         for id in Set([userID, participantID]) {
             await saveSilentSubscription(
@@ -415,15 +510,23 @@ final class SharingService {
                 recordType: RT.friendship,
                 predicate: NSPredicate(format: "members CONTAINS %@", id)
             )
+            await saveSilentSubscription(
+                id: "reactions-to-\(subscriptionIDComponent(id))",
+                recordType: RT.reaction,
+                predicate: NSPredicate(format: "recipientID == %@", id),
+                // Update too: replacing a reaction mutates the SAME record.
+                options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+            )
         }
     }
 
-    private func saveSilentSubscription(id: String, recordType: String, predicate: NSPredicate) async {
+    private func saveSilentSubscription(id: String, recordType: String, predicate: NSPredicate,
+                                        options: CKQuerySubscription.Options = [.firesOnRecordCreation]) async {
         let subscription = CKQuerySubscription(
             recordType: recordType,
             predicate: predicate,
             subscriptionID: id,
-            options: [.firesOnRecordCreation]
+            options: options
         )
         let info = CKSubscription.NotificationInfo()
         info.shouldSendContentAvailable = true   // silent push

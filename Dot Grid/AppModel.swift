@@ -154,6 +154,8 @@ final class AppModel {
             outbox = []
             UserDefaults.standard.removeObject(forKey: "lastRecipients")
             UserDefaults.standard.removeObject(forKey: "lastDrawingFetch")
+            UserDefaults.standard.removeObject(forKey: "lastReactionFetch")
+            UserDefaults.standard.removeObject(forKey: Self.reactionOutboxKey)
             UserDefaults.standard.removeObject(forKey: Self.inboxSeenKey)
             inboxHasUnread = false
             clearInviteCode()
@@ -222,13 +224,14 @@ final class AppModel {
         guard case let .available(userID) = account else { return false }
         await refreshFriends()   // a push may mean a new friendship, not just a drawing
         let count = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
+        let reactions = (try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
         refreshInboxUnread()
         if count > 0 {
             WidgetCenter.shared.reloadAllTimelines()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
             notifications.noteReceivedFromFriend()          // the one allowed re-prime
         }
-        return count > 0
+        return count > 0 || reactions > 0
     }
 
     // MARK: - Onboarding
@@ -448,10 +451,13 @@ final class AppModel {
         // Record it in the inbox's "sent" feed. Resolve recipients to friends for
         // their token/name; an unknown id (rare) falls back to a placeholder. An
         // empty list means a local-only send (no friends picked).
+        // ONE id per send: the sent-feed entry, the outbox item, and the CloudKit
+        // record's `messageID` all share it — it's the key a reaction points back at.
+        let messageID = UUID().uuidString
         let recipients: [FriendInfo] = recipientIDs.map { id in
             friends.first { $0.id == id } ?? FriendInfo(id: id, name: "friend", token: .placeholder)
         }
-        GridStore.shared.appendSent(SentMessage(id: UUID().uuidString, drawing: echo, recipients: recipients))
+        GridStore.shared.appendSent(SentMessage(id: messageID, drawing: echo, recipients: recipients))
 
         WidgetCenter.shared.reloadAllTimelines()
 
@@ -466,15 +472,15 @@ final class AppModel {
         let queued: QueuedSend
         switch payload {
         case .dots(let grid):
-            queued = QueuedSend(id: UUID().uuidString, kind: .dots, grid: grid, imageData: nil,
+            queued = QueuedSend(id: messageID, kind: .dots, grid: grid, imageData: nil,
                                 recipientIDs: recipientIDs, senderName: profile.name,
                                 token: profile.token, createdAt: now)
         case .photo(let data):
-            queued = QueuedSend(id: UUID().uuidString, kind: .photo, grid: nil, imageData: data,
+            queued = QueuedSend(id: messageID, kind: .photo, grid: nil, imageData: data,
                                 recipientIDs: recipientIDs, senderName: profile.name,
                                 token: profile.token, createdAt: now)
         case .doodle(let data):
-            queued = QueuedSend(id: UUID().uuidString, kind: .doodle, grid: nil, imageData: data,
+            queued = QueuedSend(id: messageID, kind: .doodle, grid: nil, imageData: data,
                                 recipientIDs: recipientIDs, senderName: profile.name,
                                 token: profile.token, createdAt: now)
         }
@@ -488,13 +494,15 @@ final class AppModel {
     var hasPendingSends: Bool { !outbox.isEmpty }
 
     func flushOutbox() async {
+        await flushReactions()
         guard let profile, isOnline, !outbox.isEmpty else { return }
         let senderID = participantID(for: profile.id)
         var remaining: [QueuedSend] = []
         for item in outbox {
             let failed = await service.sendMessage(
                 kind: item.kind, grid: item.grid, imageData: item.imageData,
-                to: item.recipientIDs, from: profile, senderID: senderID
+                to: item.recipientIDs, from: profile, senderID: senderID,
+                messageID: item.id
             )
             if !failed.isEmpty {
                 var retry = item
@@ -504,6 +512,67 @@ final class AppModel {
         }
         outbox = remaining
         GridStore.shared.saveOutbox(outbox)
+    }
+
+    // MARK: - Reactions
+
+    /// A reaction op waiting on connectivity (nil emoji = un-react).
+    private struct QueuedReaction: Codable {
+        var emoji: String?
+        var messageID: String?
+        var drawingSentAt: Date
+        var recipientID: String
+    }
+    private static let reactionOutboxKey = "reactionOutbox"
+
+    /// React to a received dotdot — tapping your current emoji again un-reacts.
+    /// Local-first: the feed + widget update instantly; CloudKit follows (queued
+    /// offline, like sends). Returns the drawing's new reaction for the UI.
+    @discardableResult
+    func react(with emoji: String, to drawing: DisplayDrawing) -> String? {
+        guard !drawing.senderID.isEmpty else { return drawing.myReaction }
+        let newValue = drawing.myReaction == emoji ? nil : emoji
+
+        GridStore.shared.applyMyReaction(newValue, senderID: drawing.senderID, sentAt: drawing.sentAt)
+        WidgetCenter.shared.reloadAllTimelines()   // the emoji sticks on the widget
+
+        var queue = loadReactionQueue()
+        // A newer op for the same dotdot supersedes any queued one.
+        queue.removeAll { $0.recipientID == drawing.senderID && $0.drawingSentAt == drawing.sentAt }
+        queue.append(QueuedReaction(emoji: newValue, messageID: drawing.messageID,
+                                    drawingSentAt: drawing.sentAt, recipientID: drawing.senderID))
+        saveReactionQueue(queue)
+        Task { await flushReactions() }
+        return newValue
+    }
+
+    private func flushReactions() async {
+        guard let profile, isOnline else { return }
+        let queue = loadReactionQueue()
+        guard !queue.isEmpty else { return }
+        let reactorID = participantID(for: profile.id)
+        var remaining: [QueuedReaction] = []
+        for op in queue {
+            if let emoji = op.emoji {
+                let ok = await service.sendReaction(emoji: emoji, messageID: op.messageID,
+                                                    drawingSentAt: op.drawingSentAt,
+                                                    to: op.recipientID, from: profile, reactorID: reactorID)
+                if !ok { remaining.append(op) }
+            } else {
+                await service.removeReaction(messageID: op.messageID,
+                                             drawingSentAt: op.drawingSentAt, reactorID: reactorID)
+            }
+        }
+        saveReactionQueue(remaining)
+    }
+
+    private func loadReactionQueue() -> [QueuedReaction] {
+        guard let data = UserDefaults.standard.data(forKey: Self.reactionOutboxKey) else { return [] }
+        return (try? JSONDecoder().decode([QueuedReaction].self, from: data)) ?? []
+    }
+
+    private func saveReactionQueue(_ queue: [QueuedReaction]) {
+        UserDefaults.standard.set(try? JSONEncoder().encode(queue), forKey: Self.reactionOutboxKey)
     }
 
     // MARK: - Inbox unread / shimmer
@@ -540,6 +609,8 @@ final class AppModel {
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }
+        // Reactions to dotdots I sent (updates the sent feed; no widget content).
+        _ = try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))
         refreshInboxUnread()
     }
 

@@ -62,9 +62,15 @@ struct DisplayDrawing: Codable, Equatable {
     var senderName: String
     var token: IdentityToken
     var sentAt: Date
+    /// Stable cross-device ID (the sender's local send UUID, carried on the Drawing
+    /// record) — what a reaction points at. nil on dotdots sent before reactions.
+    var messageID: String?
+    /// The emoji I reacted with to this RECEIVED dotdot (local; badges the widget).
+    var myReaction: String?
 
     init(kind: MessageKind, grid: Grid? = nil, imageData: Data? = nil,
-         senderID: String, senderName: String, token: IdentityToken, sentAt: Date) {
+         senderID: String, senderName: String, token: IdentityToken, sentAt: Date,
+         messageID: String? = nil, myReaction: String? = nil) {
         self.kind = kind
         self.grid = grid
         self.imageData = imageData
@@ -72,28 +78,32 @@ struct DisplayDrawing: Codable, Equatable {
         self.senderName = senderName
         self.token = token
         self.sentAt = sentAt
+        self.messageID = messageID
+        self.myReaction = myReaction
     }
 
     static func dots(_ grid: Grid, senderID: String, senderName: String,
-                     token: IdentityToken, sentAt: Date) -> DisplayDrawing {
+                     token: IdentityToken, sentAt: Date, messageID: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .dots, grid: grid, senderID: senderID,
-                       senderName: senderName, token: token, sentAt: sentAt)
+                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
     }
 
     static func photo(_ imageData: Data, senderID: String, senderName: String,
-                      token: IdentityToken, sentAt: Date) -> DisplayDrawing {
+                      token: IdentityToken, sentAt: Date, messageID: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .photo, imageData: imageData, senderID: senderID,
-                       senderName: senderName, token: token, sentAt: sentAt)
+                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
     }
 
     static func doodle(_ imageData: Data, senderID: String, senderName: String,
-                       token: IdentityToken, sentAt: Date) -> DisplayDrawing {
+                       token: IdentityToken, sentAt: Date, messageID: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .doodle, imageData: imageData, senderID: senderID,
-                       senderName: senderName, token: token, sentAt: sentAt)
+                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
     }
 
     // Tolerant decode: older cached records had no `kind` and a required `grid`.
-    enum CodingKeys: String, CodingKey { case kind, grid, imageData, senderID, senderName, token, sentAt }
+    enum CodingKeys: String, CodingKey {
+        case kind, grid, imageData, senderID, senderName, token, sentAt, messageID, myReaction
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = (try? c.decode(MessageKind.self, forKey: .kind)) ?? .dots
@@ -103,7 +113,19 @@ struct DisplayDrawing: Codable, Equatable {
         senderName = (try? c.decode(String.self, forKey: .senderName)) ?? "Friend"
         token = (try? c.decode(IdentityToken.self, forKey: .token)) ?? .placeholder
         sentAt = (try? c.decode(Date.self, forKey: .sentAt)) ?? Date()
+        messageID = try? c.decode(String.self, forKey: .messageID)
+        myReaction = try? c.decode(String.self, forKey: .myReaction)
     }
+}
+
+/// One friend's emoji reaction to a dotdot you sent — shown on the sent feed.
+struct ReactionInfo: Codable, Equatable, Identifiable {
+    var emoji: String
+    var reactorID: String
+    var reactorName: String
+    var at: Date
+
+    var id: String { reactorID }   // one reaction per person; a new one replaces
 }
 
 /// A dotdot you sent, kept for the inbox's "sent" feed. Reuses `DisplayDrawing` for
@@ -113,8 +135,27 @@ struct SentMessage: Codable, Equatable, Identifiable {
     var id: String
     var drawing: DisplayDrawing
     var recipients: [FriendInfo]
+    /// Emoji reactions from recipients, newest state per person.
+    var reactions: [ReactionInfo] = []
 
     var sentAt: Date { drawing.sentAt }
+
+    init(id: String, drawing: DisplayDrawing, recipients: [FriendInfo], reactions: [ReactionInfo] = []) {
+        self.id = id
+        self.drawing = drawing
+        self.recipients = recipients
+        self.reactions = reactions
+    }
+
+    // Tolerant decode: history saved before reactions shipped has no `reactions` key.
+    enum CodingKeys: String, CodingKey { case id, drawing, recipients, reactions }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        drawing = try c.decode(DisplayDrawing.self, forKey: .drawing)
+        recipients = (try? c.decode([FriendInfo].self, forKey: .recipients)) ?? []
+        reactions = (try? c.decode([ReactionInfo].self, forKey: .reactions)) ?? []
+    }
 }
 
 /// A send that still needs to reach CloudKit (offline / retrying). Persisted so a

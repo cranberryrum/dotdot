@@ -81,6 +81,12 @@ struct ComposerView: View {
         .onChange(of: activeSheet) { _, sheet in
             if sheet == nil && appModel.notifications.wantsPriming { scheduleNotificationPriming() }
         }
+        // Tapping the widget deep-links straight to the inbox (received feed) — the
+        // fastest path from "saw it on the home screen" to reacting to it.
+        .onOpenURL { url in
+            guard url.scheme == "dotdot", url.host == "inbox" else { return }
+            activeSheet = .inbox
+        }
     }
 
     private func scheduleNotificationPriming() {
