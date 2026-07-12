@@ -70,6 +70,23 @@ struct PhotoComposerView: View {
     @State private var editingCaption = false
     @State private var captionDragFrom: CGPoint?   // chip position when the drag began (nil = not dragging)
 
+    // Dual shot: back photo, then an automatic selfie PiP (see DualShot.swift).
+    @AppStorage("dualShotMode") private var dualShot = false
+    @State private var pipImage: UIImage?
+    @State private var pipCorner: PipCorner = .bottomTrailing
+    @State private var pipDragOffset: CGSize = .zero
+    @State private var pipDragging = false
+    @State private var pipSwapped = false          // selfie is currently the big frame
+    @State private var pipMissing = false          // selfie failed → retake chip
+    @State private var selfieStepActive = false    // keeps the camera alive during the flow
+    @State private var selfieCountdown: Int?       // 3 → 2 → 1 over the live second shot
+    @State private var selfieTask: Task<Void, Never>?
+    // The camera the countdown runs on — the opposite of whichever took the first
+    // shot, so dual works front-first too. Retakes re-run against the same one.
+    @State private var secondShotPosition: AVCaptureDevice.Position = .front
+    private let tickHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let captureHaptic = UIImpactFeedbackGenerator(style: .rigid)
+
     /// Carousel order after the plain photo (time, place).
     private let pillPages = StickerKind.carousel
     private let penWidthFraction: CGFloat = 0.02
@@ -102,8 +119,15 @@ struct PhotoComposerView: View {
         .onAppear { sendHaptic.prepare(); pageHaptic.prepare(); syncCamera() }
         // The live camera runs only while the Photo tab is frontmost and there's no
         // captured/picked shot to frame — and never while backgrounded.
-        .onChange(of: isActive) { _, _ in syncCamera() }
-        .onChange(of: scenePhase) { _, _ in syncCamera() }
+        .onChange(of: isActive) { _, active in
+            if !active { cancelSelfieStep() }   // switching tabs mid-flow keeps the back shot
+            syncCamera()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Backgrounding mid-countdown cancels cleanly — never capture off-screen.
+            if phase != .active { cancelSelfieStep() }
+            syncCamera()
+        }
         .onChange(of: image) { _, _ in syncCamera() }
         // The user engaged the doodle (opened the tray or paged away) — drop the nudge.
         .onChange(of: isDrawing) { _, drawing in if drawing { cancelDoodleHint() } }
@@ -149,8 +173,10 @@ struct PhotoComposerView: View {
 
     /// Start the live camera only when the tab is active, frontmost, and we're not
     /// already framing a shot; otherwise stop it (frees the camera + its indicator).
+    /// The dual-shot selfie step keeps the session alive even though a photo is
+    /// already framed — the flow needs the front camera live for its countdown.
     private func syncCamera() {
-        if isActive && scenePhase == .active && image == nil {
+        if isActive && scenePhase == .active && (image == nil || selfieStepActive) {
             camera.activate()
         } else {
             camera.deactivate()
@@ -168,6 +194,7 @@ struct PhotoComposerView: View {
 
                 if let image {
                     photoImage(image, side: side)
+                    pipOverlay(side: side)   // dual shot: the selfie card / countdown
                     doodleOverlay(side: side)
                     pillOverlay(side: side)
                     captionOverlay(side: side)
@@ -501,8 +528,8 @@ struct PhotoComposerView: View {
         }
     }
 
-    /// In-frame controls: wide-angle (0.5×/1×) and flip, pinned to the top. (Capture
-    /// now lives in the bottom bar — the primary button doubles as the shutter.)
+    /// In-frame controls: wide-angle (0.5×/1×) and flip pinned to the top; the dual
+    /// shot toggle bottom-left. (Capture lives in the bottom bar.)
     private var cameraOverlay: some View {
         VStack {
             HStack {
@@ -511,8 +538,39 @@ struct PhotoComposerView: View {
                 flipButton
             }
             Spacer()
+            HStack {
+                dualShotToggle
+                Spacer()
+            }
         }
         .padding(16)
+    }
+
+    /// Single ↔ dual shot. Dual: shutter grabs the back camera, then auto-flips for
+    /// a countdown selfie composited as a pip card. Last choice is remembered.
+    private var dualShotToggle: some View {
+        Button {
+            withAnimation(Motion.settle) { dualShot.toggle() }
+            pageHaptic.impactOccurred(intensity: 0.6)
+            pageHaptic.prepare()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "square.on.square")
+                    .font(.system(size: 12, weight: .bold))
+                Text("dual")
+                    .font(DotFont.mono(12, bold: true))
+            }
+            .foregroundStyle(dualShot ? Theme.ink : .white)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(dualShot ? AnyShapeStyle(Theme.cream) : AnyShapeStyle(.ultraThinMaterial))
+            )
+        }
+        .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("dual shot")
+        .accessibilityAddTraits(dualShot ? .isSelected : [])
     }
 
     private var flipButton: some View {
@@ -550,10 +608,95 @@ struct PhotoComposerView: View {
     private func captureTapped() {
         sendHaptic.impactOccurred()   // a shutter thunk on tap
         sendHaptic.prepare()
+        // Second shot = whichever camera you WEREN'T on: back-first users get the
+        // selfie countdown; front-first users get it on the back camera.
+        let secondPosition: AVCaptureDevice.Position = camera.position == .front ? .back : .front
         Task {
             guard let shot = await camera.capturePhoto() else { return }
-            setImage(shot)
+            if dualShot {
+                // Kick the flip IMMEDIATELY — it runs while the first shot is
+                // normalized off-main below. Serializing these (normalize, THEN
+                // flip) was most of the dead time before the countdown appeared.
+                startSecondShot(to: secondPosition)
+            }
+            // Orientation-normalizing a full-res frame is a CPU redraw — off the
+            // main thread so the UI (and the countdown card) never stalls on it.
+            let normalized = await Task.detached(priority: .userInitiated) { shot.normalizedUp() }.value
+            applyImage(normalized)
         }
+    }
+
+    // MARK: Dual shot (second-shot step)
+
+    /// Flip to the second camera, wait for a LIVE preview (never count down over a
+    /// black frame), run a bold 3-2-1 over the pip card, then capture automatically.
+    private func startSecondShot(to position: AVCaptureDevice.Position) {
+        selfieTask?.cancel()
+        secondShotPosition = position
+        // Retaking while swapped: put the first shot up front again, so the new
+        // second shot lands in the pip and you never end up with two of the same.
+        if pipSwapped, let pip = pipImage { image = pip; pipSwapped = false }
+        pipImage = nil
+        pipMissing = false
+        selfieStepActive = true
+        syncCamera()   // keep the session alive though a photo is framed
+        selfieTask = Task {
+            await camera.setPosition(position)
+            await camera.waitUntilPreviewLive()
+            guard !Task.isCancelled else { return }
+            for n in [3, 2, 1] {
+                withAnimation(Motion.crisp(0.25)) { selfieCountdown = n }
+                tickHaptic.impactOccurred()
+                tickHaptic.prepare()
+                try? await Task.sleep(for: .milliseconds(833))
+                if Task.isCancelled { return }
+            }
+            guard scenePhase == .active, !Task.isCancelled else { return }
+            let second = await camera.capturePhoto()
+            guard !Task.isCancelled else { return }
+            captureHaptic.impactOccurred()
+            captureHaptic.prepare()
+            if let second {
+                withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Motion.pop) { pipImage = second }
+            } else {
+                // Never lose both: the first shot stays; the pip slot offers a retake.
+                pipMissing = true
+                appModel.showToast(position == .front ? "couldn't get the selfie" : "couldn't get the back shot",
+                                   icon: "camera.badge.ellipsis",
+                                   actionTitle: "retry") { startSecondShot(to: position) }
+            }
+            endSelfieStep()
+        }
+    }
+
+    /// Wind the flow down: clear the countdown, hand the camera back to the lens the
+    /// user had open, and let syncCamera stop the session (a photo is framed).
+    private func endSelfieStep() {
+        selfieCountdown = nil
+        selfieStepActive = false
+        camera.resetPosition(to: secondShotPosition == .front ? .back : .front)
+        syncCamera()
+    }
+
+    /// Abort the selfie step (cancel ×, backgrounding, tab switch, retake). The back
+    /// shot stays as a normal single photo.
+    private func cancelSelfieStep() {
+        guard selfieStepActive else { return }
+        selfieTask?.cancel()
+        withAnimation(.easeOut(duration: 0.15)) { endSelfieStep() }
+    }
+
+    /// Swap which shot is primary: selfie big ↔ back big.
+    private func swapPip() {
+        guard let pip = pipImage, let base = image else { return }
+        pageHaptic.impactOccurred(intensity: 0.6)
+        pageHaptic.prepare()
+        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Motion.settle) {
+            image = pip
+            pipImage = base
+            pipSwapped.toggle()
+        }
+        if hasSent { hasSent = false }
     }
 
     /// Shown until the camera is ready: asks for permission the first time, routes to
@@ -590,6 +733,7 @@ struct PhotoComposerView: View {
 
     /// Reset the photo canvas back to the live camera — the bottom bar's cancel action.
     private func retake() {
+        cancelSelfieStep()
         withAnimation(.snappy(duration: 0.3)) {
             image = nil
             pills = [:]
@@ -599,6 +743,11 @@ struct PhotoComposerView: View {
             isDrawing = false
             hasSent = false
             caption = nil
+            pipImage = nil
+            pipMissing = false
+            pipSwapped = false
+            pipCorner = .bottomTrailing
+            pipDragOffset = .zero
         }
     }
 
@@ -700,11 +849,12 @@ struct PhotoComposerView: View {
         return hasSent ? "sent!" : "send"
     }
 
-    /// Capture is disabled until the live preview is up; send is disabled once sent (or,
-    /// in the inline flow with friends, until someone's picked).
+    /// Capture is disabled until the live preview is up; send is disabled once sent,
+    /// while the selfie step is still running (or, in the inline flow with friends,
+    /// until someone's picked).
     private var primaryDisabled: Bool {
         if image == nil { return !camera.showsPreview }
-        return hasSent
+        return hasSent || selfieStepActive
             || (SendFlow.useInlineRecipients && appModel.canPickRecipients && !appModel.hasRecipientSelection)
     }
 
@@ -776,6 +926,129 @@ struct PhotoComposerView: View {
             .onEnded { _ in captionDragFrom = nil }
     }
 
+    // MARK: Dual shot (pip card, countdown, retake)
+
+    /// The selfie layer over the framed photo: the live countdown card while the
+    /// selfie step runs, the draggable/swappable pip card once captured, or a
+    /// retake chip if the selfie failed. Tap the card to swap primary; drag past
+    /// 6pt to move it (the threshold keeps the tap alive — see the caption chip).
+    @ViewBuilder
+    private func pipOverlay(side: CGFloat) -> some View {
+        if selfieStepActive {
+            selfieCountdownCard(side: side)
+        } else if let pipImage {
+            PipCard(image: pipImage, side: side)
+                .overlay(alignment: .topLeading) { pipRetakeButton }
+                .scaleEffect(pipDragging && !reduceMotion ? 1.05 : 1)   // picked-up lift
+                .position(pipCenter(side: side))
+                .offset(pipDragOffset)
+                .onTapGesture { swapPip() }
+                .gesture(pipDrag(side: side))
+                .animation(Motion.crisp(0.18), value: pipDragging)
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+        } else if pipMissing {
+            retakeSelfieChip
+                .position(pipCenter(side: side))
+        }
+    }
+
+    private func pipCenter(side: CGFloat) -> CGPoint {
+        pipCorner.center(in: side, cardSize: PipMetrics.size(for: side), inset: PipMetrics.inset)
+    }
+
+    /// Drag follows the finger 1:1; on release the card snaps (crisp, no overshoot)
+    /// to whichever of the four corners its center landed nearest.
+    private func pipDrag(side: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                pipDragging = true
+                pipDragOffset = value.translation
+            }
+            .onEnded { value in
+                let start = pipCenter(side: side)
+                let end = CGPoint(x: start.x + value.translation.width,
+                                  y: start.y + value.translation.height)
+                withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Motion.crisp(0.28)) {
+                    pipCorner = PipCorner.nearest(to: end, in: side)
+                    pipDragOffset = .zero
+                    pipDragging = false
+                }
+                if hasSent { hasSent = false }
+            }
+    }
+
+    /// The live selfie preview in the pip slot, with a bold Archivo 3-2-1 centered
+    /// on it and a cancel × that keeps just the back shot.
+    private func selfieCountdownCard(side: CGFloat) -> some View {
+        let size = PipMetrics.size(for: side)
+        return ZStack {
+            CameraPreview(camera: camera)
+            Color.black.opacity(selfieCountdown == nil ? 0.45 : 0.28)
+            if let n = selfieCountdown {
+                Text("\(n)")
+                    .font(.custom("ArchivoBlack-Regular", fixedSize: 54))
+                    .foregroundStyle(.white)
+                    .contentTransition(.numericText(countsDown: true))
+            } else {
+                ProgressView().tint(.white)   // flipping — countdown starts once live
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: PipMetrics.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: PipMetrics.cornerRadius, style: .continuous)
+                .strokeBorder(.white.opacity(0.25), lineWidth: 1)
+        )
+        .overlay(alignment: .topTrailing) {
+            Button { cancelSelfieStep() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(.black.opacity(0.5)))
+            }
+            .buttonStyle(SquishyButtonStyle())
+            .padding(5)
+            .accessibilityLabel("skip selfie")
+        }
+        .animation(Motion.crisp(0.3), value: selfieCountdown)
+        .position(pipCenter(side: side))
+        .transition(.scale(scale: 0.9).combined(with: .opacity))
+    }
+
+    /// Small retake on the pip card — re-runs the flip + countdown, first shot intact.
+    private var pipRetakeButton: some View {
+        Button { startSecondShot(to: secondShotPosition) } label: {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(.black.opacity(0.5)))
+        }
+        .buttonStyle(SquishyButtonStyle())
+        .padding(5)
+        .accessibilityLabel("retake selfie")
+    }
+
+    /// The second shot failed — its slot offers the retake so the first is never lost.
+    private var retakeSelfieChip: some View {
+        Button { startSecondShot(to: secondShotPosition) } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 11, weight: .bold))
+                Text(secondShotPosition == .front ? "selfie" : "camera")
+                    .font(DotFont.mono(11, bold: true))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(Capsule(style: .continuous).fill(.black.opacity(0.5)))
+            .overlay(Capsule(style: .continuous).strokeBorder(.white.opacity(0.25), lineWidth: 1))
+        }
+        .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("retake selfie")
+    }
+
     /// The floating "Aa" text tool, top-right of the photo.
     private var textToolButton: some View {
         VStack {
@@ -794,10 +1067,10 @@ struct PhotoComposerView: View {
         return [pill]
     }
 
-    /// Is there anything to bake over the photo (pill, doodle, or caption)?
+    /// Is there anything to bake over the photo (pip, pill, doodle, or caption)?
     private var hasOverlay: Bool {
         let pageOverlay = pillPage == 0 ? !doodleStrokes.isEmpty : !activeStickers.isEmpty
-        return pageOverlay || !(caption?.isBlank ?? true)
+        return pageOverlay || !(caption?.isBlank ?? true) || pipImage != nil
     }
 
     /// The center-cropped square → downscaled, widget-safe JPEG, with the current
@@ -819,6 +1092,11 @@ struct PhotoComposerView: View {
                 .scaledToFill()
                 .frame(width: side, height: side)
                 .clipped()
+            // The selfie pip is part of the photo — under the doodle/pill/caption.
+            if let pipImage {
+                PipCard(image: pipImage, side: side)
+                    .position(pipCenter(side: side))
+            }
             if pillPage == 0 {
                 PhotoDoodleCanvas(strokes: doodleStrokes, size: CGSize(width: side, height: side))
             } else {
@@ -853,8 +1131,15 @@ struct PhotoComposerView: View {
         return CGRect(x: (w - s) / 2 / w, y: (h - s) / 2 / h, width: s / w, height: s / h)
     }
 
+    /// Gallery picks and other one-off frames: any in-flight selfie step is superseded.
     private func setImage(_ new: UIImage) {
-        let normalized = new.normalizedUp()
+        cancelSelfieStep()
+        applyImage(new.normalizedUp())
+    }
+
+    /// Land an already-normalized frame WITHOUT touching the selfie step — the dual
+    /// shot flow starts its flip before the first frame finishes normalizing.
+    private func applyImage(_ normalized: UIImage) {
         withAnimation(.snappy(duration: 0.3)) {
             image = normalized   // first page; the bottom bar morphs capture → send
             pills = [:]
@@ -864,14 +1149,22 @@ struct PhotoComposerView: View {
             isDrawing = false
             hasSent = false
             caption = nil
+            pipImage = nil
+            pipMissing = false
+            pipSwapped = false
+            pipCorner = .bottomTrailing
+            pipDragOffset = .zero
         }
         nudgeDoodleHint()
     }
 
-    /// Fire the first-run doodle nudge for the first `doodleHintBudget` photos, then stop.
+    /// Fire the first-run doodle nudge for the first `doodleHintBudget` photos, then
+    /// stop — unless the debug "replay first-time hints" toggle is on, which plays it
+    /// on every photo without consuming the budget.
     private func nudgeDoodleHint() {
-        guard doodleHintCount < doodleHintBudget else { return }
-        doodleHintCount += 1
+        let replay = DebugFlags.replayFirstRuns
+        guard replay || doodleHintCount < doodleHintBudget else { return }
+        if !replay { doodleHintCount += 1 }
         hintTask?.cancel()
         hintTask = Task { await runDoodleHint() }
     }

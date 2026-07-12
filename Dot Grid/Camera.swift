@@ -87,9 +87,34 @@ final class CameraController {
     // MARK: Lens controls
 
     func flip() {
-        position = position == .back ? .front : .back
-        if position != .back { isWide = false }   // front has no ultra-wide
-        Task { await configure() }
+        Task { await setPosition(position == .back ? .front : .back) }
+    }
+
+    /// Switch to a specific camera and wait for the session to be reconfigured.
+    /// The dual-shot flow uses this to flip to the selfie camera deterministically.
+    func setPosition(_ new: AVCaptureDevice.Position) async {
+        position = new
+        if new != .back { isWide = false }   // front has no ultra-wide
+        await configure()
+    }
+
+    /// Reset the NEXT session's camera without touching the running one — used when
+    /// the dual-shot flow ends and the camera is about to be deactivated; the next
+    /// `activate()` configures for this position (the one the user had open).
+    func resetPosition(to new: AVCaptureDevice.Position) {
+        position = new
+        if new != .back { isWide = false }
+    }
+
+    /// Wait until the preview layer is actually rendering frames (or the timeout
+    /// passes). After an input switch the first frame can lag the configuration by
+    /// a few hundred ms — the dual-shot countdown must never run over a black frame.
+    func waitUntilPreviewLive(timeout: TimeInterval = 1.5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if previewLayer?.isPreviewing == true { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     func toggleWide() {
@@ -113,7 +138,13 @@ final class CameraController {
                     if connection.isVideoRotationAngleSupported(angle) { connection.videoRotationAngle = angle }
                     if connection.isVideoMirroringSupported { connection.isVideoMirrored = mirror }
                 }
-                output.capturePhoto(with: AVCapturePhotoSettings(), delegate: delegate)
+                let settings = AVCapturePhotoSettings()
+                settings.flashMode = .off   // never carries between dual-shot frames
+                // Speed over max processing quality: the image is downscaled to
+                // ~1100px for the widget anyway, and dual shot needs a snappy
+                // handoff from the first shot to the second camera's countdown.
+                settings.photoQualityPrioritization = .speed
+                output.capturePhoto(with: settings, delegate: delegate)
             }
         }
     }
@@ -141,6 +172,9 @@ final class CameraController {
                 }
                 if session.canAddInput(input) { session.addInput(input) }
                 if !session.outputs.contains(output), session.canAddOutput(output) { session.addOutput(output) }
+                // Cut shutter lag where the hardware supports it (no-ops elsewhere).
+                if output.isResponsiveCaptureSupported { output.isResponsiveCaptureEnabled = true }
+                if output.isFastCapturePrioritizationSupported { output.isFastCapturePrioritizationEnabled = true }
                 session.commitConfiguration()
                 if !session.isRunning { session.startRunning() }
                 continuation.resume(returning: (true, Self.ultraWideAvailable(position: position), device))
