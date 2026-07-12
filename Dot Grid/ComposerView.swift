@@ -152,9 +152,6 @@ struct ComposerView: View {
                         .accessibilityAddTraits(.isButton)
                 }
             }
-            if !appModel.isSignedIn {
-                iCloudBanner
-            }
         }
     }
 
@@ -203,24 +200,6 @@ struct ComposerView: View {
             .mask(wordmarkText)
             .allowsHitTesting(false)
         }
-    }
-
-    private var iCloudBanner: some View {
-        Button {
-            Task { await appModel.onForeground() }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "icloud.slash.fill")
-                Text("Sign into iCloud to send & receive")
-                    .font(.footnote.weight(.semibold))
-                Spacer()
-            }
-            .foregroundStyle(.white.opacity(0.8))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Palette.boardBackground))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: Mode toggle

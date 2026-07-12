@@ -9,10 +9,21 @@
 
 import SwiftUI
 
+/// Debug-only switches, readable from anywhere in the app target.
+enum DebugFlags {
+    static let replayFirstRunsKey = "debugReplayFirstRuns"
+    /// While on, first-run one-shots (hints / nudges) play every time — the
+    /// gates bypass their persisted budgets without consuming them.
+    static var replayFirstRuns: Bool {
+        UserDefaults.standard.bool(forKey: replayFirstRunsKey)
+    }
+}
+
 struct DebugView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     @State private var working = false
+    @AppStorage(DebugFlags.replayFirstRunsKey) private var replayFirstRuns = false
 
     var body: some View {
         NavigationStack {
@@ -47,6 +58,12 @@ struct DebugView: View {
                 Section("Sending") {
                     row("Pending sends", "\(appModel.outbox.count)")
                     row("Last recipients", appModel.lastRecipientIDs.isEmpty ? "—" : "\(appModel.lastRecipientIDs.count)")
+                }
+                Section("First-time hints") {
+                    Toggle("Replay first-time hints", isOn: $replayFirstRuns)
+                    Text("While on, one-shot hints play every time instead of just the first few — the pull-up chevron when a photo lands, and the inbox notifications nudge (if notifications are off). Budgets aren't consumed while replaying.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Section("Last CloudKit error") {
                     Text(appModel.lastError ?? "none")

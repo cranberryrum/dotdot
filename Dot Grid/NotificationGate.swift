@@ -60,8 +60,10 @@ final class NotificationGate {
     var canPrime: Bool { status == .notDetermined }
 
     /// The feed nudge shows only when undecided or denied, and not yet crossed off.
+    /// The debug replay toggle bypasses the dismissal (never the OS permission state).
     var shouldShowFeedNudge: Bool {
-        (status == .notDetermined || status == .denied) && !feedNudgeDismissed
+        (status == .notDetermined || status == .denied)
+            && (!feedNudgeDismissed || DebugFlags.replayFirstRuns)
     }
 
     // MARK: - Automatic triggers (set the signal; ComposerView presents when frontmost)

@@ -42,6 +42,7 @@ struct AddFriendView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if !appModel.isSignedIn { iCloudBanner }
                 pairCard
                 friendsCard
                 doneButton
@@ -67,6 +68,26 @@ struct AddFriendView: View {
         } message: { friend in
             Text("you'll stop sending to and receiving from \(friend.name). you can always pair again with a new code.")
         }
+    }
+
+    // MARK: - iCloud notice (pairing needs an account; tap retries the check)
+
+    private var iCloudBanner: some View {
+        Button {
+            Task { await appModel.onForeground() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "icloud.slash.fill")
+                Text("sign into icloud to send & receive")
+                    .font(DotFont.ui(14, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(.white.opacity(0.8))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
+        }
+        .buttonStyle(SquishyButtonStyle())
     }
 
     // MARK: - Pairing card (tabbed)
