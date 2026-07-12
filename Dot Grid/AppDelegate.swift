@@ -31,8 +31,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             return
         }
         Task {
-            await AppModel.shared.handlePush()
-            completionHandler(.newData)
+            let fetched = await AppModel.shared.handlePush()
+            // Report honestly — iOS tracks this to decide how eagerly to keep
+            // waking us for future silent pushes.
+            completionHandler(fetched ? .newData : .noData)
         }
     }
 

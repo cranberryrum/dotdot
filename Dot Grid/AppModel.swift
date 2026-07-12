@@ -112,6 +112,13 @@ final class AppModel {
 
     init() {
         profile = GridStore.shared.loadProfile()
+        // Local-first friends: hydrate from the App Group roster (kept fresh by every
+        // refreshFriends) so the recipient strip renders IMMEDIATELY on launch — an
+        // instant send goes to your friends, not a local-only echo. Without this,
+        // friends stayed empty until the CloudKit query returned, and a quick send
+        // fell through to "only you". CloudKit reconciles moments later (bootstrap /
+        // onForeground); an account switch clears the roster before it's ever wrong.
+        friends = GridStore.shared.roster()
         outbox = GridStore.shared.loadOutbox()
         lastRecipientIDs = UserDefaults.standard.stringArray(forKey: "lastRecipients") ?? []
         inboxHasUnread = computeInboxUnread()   // from cache, so the cold launch knows immediately
@@ -171,6 +178,7 @@ final class AppModel {
         await refreshFriends()
         await pullIncoming()
         await flushOutbox()
+        WidgetCenter.shared.reloadAllTimelines()   // cold-launch catch-up; see onForeground
     }
 
     /// Lighter refresh when the app returns to the foreground.
@@ -187,6 +195,12 @@ final class AppModel {
             await pullIncoming()
             await flushOutbox()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // warm open with unread → shimmer
+            // ALWAYS reload here, not just when this pull fetched something: a push may
+            // have fetched + saved while backgrounded (advancing the high-water mark, so
+            // the pull above finds nothing) with ITS reload budget-throttled by iOS —
+            // leaving the widget stale while the inbox has the message. Foreground is
+            // the one moment reloads are effectively free and applied promptly.
+            WidgetCenter.shared.reloadAllTimelines()
         } else if case .available = account, profile == nil {
             await bootstrap()
         } else {
@@ -199,10 +213,13 @@ final class AppModel {
     }
 
     /// Called from the push handler — also works on a cold background launch
-    /// where `account` hasn't been resolved yet.
-    func handlePush() async {
+    /// where `account` hasn't been resolved yet. Returns whether anything new was
+    /// fetched, so the push completion can report .newData/.noData honestly (iOS
+    /// uses that record to decide how eagerly to keep waking us).
+    @discardableResult
+    func handlePush() async -> Bool {
         if case .available = account {} else { account = await service.accountState() }
-        guard case let .available(userID) = account else { return }
+        guard case let .available(userID) = account else { return false }
         await refreshFriends()   // a push may mean a new friendship, not just a drawing
         let count = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
         refreshInboxUnread()
@@ -211,6 +228,7 @@ final class AppModel {
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
             notifications.noteReceivedFromFriend()          // the one allowed re-prime
         }
+        return count > 0
     }
 
     // MARK: - Onboarding

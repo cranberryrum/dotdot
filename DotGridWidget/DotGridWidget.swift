@@ -114,8 +114,11 @@ struct LatestProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<DotGridEntry>) -> Void) {
         let entry = DotGridEntry(date: .now, drawing: GridStore.shared.latestDisplayDrawing())
-        // The app reloads timelines on send/receive; the widget never fetches.
-        completion(Timeline(entries: [entry], policy: .never))
+        // The app reloads timelines on send/receive; the widget never fetches. But a
+        // reload requested from the BACKGROUND (push path) can be throttled/dropped by
+        // iOS — so ask to be re-run periodically as a self-healing safety net: each run
+        // re-reads the App Group, catching anything a dropped reload left stale.
+        completion(Timeline(entries: [entry], policy: .after(.now + 30 * 60)))
     }
 }
 
@@ -178,7 +181,9 @@ struct FriendProvider: AppIntentTimelineProvider {
     }
 
     func timeline(for configuration: SelectFriendIntent, in context: Context) async -> Timeline<DotGridEntry> {
-        Timeline(entries: [DotGridEntry(date: .now, drawing: drawing(for: configuration))], policy: .never)
+        // Periodic self-heal, same as LatestProvider — see the note there.
+        Timeline(entries: [DotGridEntry(date: .now, drawing: drawing(for: configuration))],
+                 policy: .after(.now + 30 * 60))
     }
 
     private func drawing(for configuration: SelectFriendIntent) -> DisplayDrawing? {
