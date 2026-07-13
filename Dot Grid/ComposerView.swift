@@ -80,6 +80,9 @@ struct ComposerView: View {
         }
         .onChange(of: activeSheet) { _, sheet in
             if sheet == nil && appModel.notifications.wantsPriming { scheduleNotificationPriming() }
+            // Debug: with the force-shimmer switch on, closing any sheet (e.g. the
+            // debug panel itself) replays the sheen — instant feedback for tuning it.
+            if sheet == nil && DebugFlags.forceShimmer { playInboxShimmer() }
         }
         // Tapping the widget deep-links straight to the inbox (received feed) — the
         // fastest path from "saw it on the home screen" to reacting to it.
@@ -119,9 +122,10 @@ struct ComposerView: View {
     /// Plays the wordmark sheen: two clean sweeps, then rest. Resetting the phase in
     /// a follow-up tick guarantees the animation actually runs (a same-transaction
     /// 1→0→1 would coalesce to no change), and the reset point is off-screen so
-    /// there's no flash. No-op when there's nothing unread or under Reduce Motion.
+    /// there's no flash. No-op when there's nothing unread or under Reduce Motion
+    /// (the debug force-shimmer switch bypasses the unread check, never the motion one).
     private func playInboxShimmer() {
-        guard appModel.inboxHasUnread, !reduceMotion else { return }
+        guard appModel.inboxHasUnread || DebugFlags.forceShimmer, !reduceMotion else { return }
         shimmerPhase = 0
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.95).repeatCount(2, autoreverses: false)) {
@@ -197,7 +201,7 @@ struct ComposerView: View {
     /// motion is allowed) — so it leaves no static artifact once the inbox is opened.
     @ViewBuilder
     private var inboxShimmer: some View {
-        if appModel.inboxHasUnread && !reduceMotion {
+        if (appModel.inboxHasUnread || DebugFlags.forceShimmer) && !reduceMotion {
             GeometryReader { proxy in
                 let w = proxy.size.width
                 let band = max(w * 0.42, 38)

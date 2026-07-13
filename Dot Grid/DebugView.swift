@@ -17,6 +17,13 @@ enum DebugFlags {
     static var replayFirstRuns: Bool {
         UserDefaults.standard.bool(forKey: replayFirstRunsKey)
     }
+
+    static let forceShimmerKey = "debugForceShimmer"
+    /// While on, the wordmark shimmer (normally an unread-dotdots cue) plays on
+    /// every app open and after closing any sheet — no unread required.
+    static var forceShimmer: Bool {
+        UserDefaults.standard.bool(forKey: forceShimmerKey)
+    }
 }
 
 struct DebugView: View {
@@ -24,6 +31,7 @@ struct DebugView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var working = false
     @AppStorage(DebugFlags.replayFirstRunsKey) private var replayFirstRuns = false
+    @AppStorage(DebugFlags.forceShimmerKey) private var forceShimmer = false
 
     var body: some View {
         NavigationStack {
@@ -62,6 +70,12 @@ struct DebugView: View {
                 Section("First-time hints") {
                     Toggle("Replay first-time hints", isOn: $replayFirstRuns)
                     Text("While on, one-shot hints play every time instead of just the first few — the pull-up chevron when a photo lands, and the inbox notifications nudge (if notifications are off). Budgets aren't consumed while replaying.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Shimmer") {
+                    Toggle("Always play the inbox shimmer", isOn: $forceShimmer)
+                    Text("While on, the wordmark sheen plays on every app open and after closing any sheet — no unread dotdot required. For eyeballing the shimmer.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
