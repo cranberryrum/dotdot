@@ -2,10 +2,11 @@
 //  DualShot.swift
 //  Dot Grid
 //
-//  Dual shot: back photo first, then an automatic selfie — composited into ONE
-//  image (back full-frame, selfie as a rounded picture-in-picture card). These are
-//  the pieces shared by the on-screen editor and the baked render, so the card you
-//  drag is exactly the card your friend sees (same trick as the caption chip).
+//  Dual shot: TRUE simultaneous capture (AVCaptureMultiCamSession) — back and front
+//  frames in the same instant, composited into ONE image (back full-frame, selfie as
+//  a rounded picture-in-picture card). Only exists on multi-cam-capable devices.
+//  These are the pieces shared by the on-screen editor and the baked render, so the
+//  card you drag is exactly the card your friend sees (same trick as the caption chip).
 //
 
 import SwiftUI

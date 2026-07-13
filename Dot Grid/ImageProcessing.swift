@@ -63,7 +63,9 @@ enum ImageProcessing {
 extension UIImage {
     /// Redraws the image in `.up` orientation so pixel-space crops line up with
     /// what the user framed (camera/HEIC images often carry rotation metadata).
-    func normalizedUp() -> UIImage {
+    /// `nonisolated`: full-res redraws run in detached tasks, off the main actor
+    /// (the project's default isolation is MainActor).
+    nonisolated func normalizedUp() -> UIImage {
         guard imageOrientation != .up else { return self }
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = scale
