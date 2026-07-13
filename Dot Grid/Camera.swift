@@ -246,8 +246,8 @@ final class CameraController {
         dualFrontInput = built.frontIn
         dualBackOutput = built.backOut
         dualFrontOutput = built.frontOut
-        dualBackRotation = AVCaptureDevice.RotationCoordinator(device: built.backIn.device, previewLayer: nil)
-        dualFrontRotation = AVCaptureDevice.RotationCoordinator(device: built.frontIn.device, previewLayer: nil)
+        // Rotation coordinators are created in `wireDualPreview`, bound to the actual
+        // preview layers — they drive both the preview and capture angles.
         isDualActive = true
         dualInterrupted = false
         observeDualSession(built.session)
@@ -276,7 +276,19 @@ final class CameraController {
         let single = self.session
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             sessionQueue.async {
-                multi?.stopRunning()   // inputs/outputs/connections die with the session
+                multi?.stopRunning()
+                // Strip the session COMPLETELY. Explicit connections are owned by
+                // the session — they do NOT die when a layer detaches, and rebinding
+                // a preview layer that a lingering connection still references is an
+                // AVFoundation exception (this was the crash on the pip's ×). After
+                // the strip, the layers are free to bind to the single session.
+                if let multi {
+                    multi.beginConfiguration()
+                    multi.connections.forEach { multi.removeConnection($0) }
+                    multi.outputs.forEach { multi.removeOutput($0) }
+                    multi.inputs.forEach { multi.removeInput($0) }
+                    multi.commitConfiguration()
+                }
                 if resumeSingle, !single.isRunning { single.startRunning() }
                 continuation.resume()
             }
@@ -350,12 +362,29 @@ final class CameraController {
             guard multi.canAddConnection(connection) else { return }
             multi.beginConfiguration()
             multi.addConnection(connection)
-            if connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
             if position == .front, connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = true
             }
             multi.commitConfiguration()
+            // Rotation: manually-created preview connections don't get the implicit
+            // orientation handling — drive them from a RotationCoordinator bound to
+            // this layer (exactly like the single-cam path; a hardcoded 90 showed a
+            // sideways preview on device). The same coordinator also supplies the
+            // capture angle, so preview and photo stay in agreement.
+            nonisolated(unsafe) let connectionRef = connection
+            let device = input.device
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: layer)
+                    let angle = coordinator.videoRotationAngleForHorizonLevelPreview
+                    if connectionRef.isVideoRotationAngleSupported(angle) {
+                        connectionRef.videoRotationAngle = angle
+                    }
+                    if position == .back { self.dualBackRotation = coordinator }
+                    else { self.dualFrontRotation = coordinator }
+                }
+            }
         }
     }
 

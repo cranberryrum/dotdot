@@ -695,6 +695,10 @@ struct PhotoComposerView: View {
         guard !dualLive else { return }
         pageHaptic.impactOccurred(intensity: 0.7)
         pageHaptic.prepare()
+        // The pip GROWS IN PLACE from the toggle (bottom-left) — no jump across the
+        // frame. It's still draggable to any corner from there.
+        pipCorner = .bottomLeading
+        pipDragOffset = .zero
         withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Motion.pop) { dualLive = true }
         Task {
             let ok = await camera.enterDual()
