@@ -39,10 +39,30 @@ final class NotificationGate {
         static let declined = "notif.declined"        // user tapped "not now"
         static let reprised = "notif.reprised"        // the one allowed re-prime is spent
         static let feedDismissed = "notif.feedNudgeDismissed"
+        static let drawingsOff = "notif.type.drawings.off"
+        static let friendsOff = "notif.type.friends.off"
+        static let reactionsOff = "notif.type.reactions.off"
     }
 
     init() {
         feedNudgeDismissed = defaults.bool(forKey: Key.feedDismissed)
+        drawingAlerts = !defaults.bool(forKey: Key.drawingsOff)
+        friendAlerts = !defaults.bool(forKey: Key.friendsOff)
+        reactionAlerts = !defaults.bool(forKey: Key.reactionsOff)
+    }
+
+    // MARK: - Per-type alert toggles (defaults ON; stored inverted so no-key = on).
+    // Every visible push checks its toggle before surfacing — the toggles never
+    // touch the silent data flow.
+
+    var drawingAlerts: Bool = true {
+        didSet { defaults.set(!drawingAlerts, forKey: Key.drawingsOff) }
+    }
+    var friendAlerts: Bool = true {
+        didSet { defaults.set(!friendAlerts, forKey: Key.friendsOff) }
+    }
+    var reactionAlerts: Bool = true {
+        didSet { defaults.set(!reactionAlerts, forKey: Key.reactionsOff) }
     }
 
     private var hasPrimed: Bool { defaults.bool(forKey: Key.primed) }

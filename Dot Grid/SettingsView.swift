@@ -222,6 +222,9 @@ struct SettingsView: View {
     private var linksCard: some View {
         card {
             notificationsRow
+            if case .authorized = appModel.notifications.status {
+                notificationTypeToggles
+            }
             divider
             settingsRow("person.2.fill", "friends") { showAddFriend = true }
             divider
@@ -277,6 +280,29 @@ struct SettingsView: View {
         } else {
             appModel.notifications.openSystemSettings()   // denied (re-enable) or authorized (manage)
         }
+    }
+
+    /// Per-type alert toggles (shown once notifications are on). They gate the
+    /// visible banners only — the silent data flow never changes.
+    private var notificationTypeToggles: some View {
+        @Bindable var gate = appModel.notifications
+        return VStack(spacing: 10) {
+            notifToggle("drawings", isOn: $gate.drawingAlerts)
+            notifToggle("friend activity", isOn: $gate.friendAlerts)
+            notifToggle("reactions", isOn: $gate.reactionAlerts)
+        }
+        .padding(.leading, 36)   // aligns under the bell row's label
+        .padding(.top, 2)
+    }
+
+    private func notifToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            Text(label)
+                .font(DotFont.ui(14, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .tint(Theme.mint)
+        .controlSize(.mini)
     }
 
     // MARK: Delete

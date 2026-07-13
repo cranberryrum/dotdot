@@ -46,6 +46,11 @@ final class AppModel {
     /// replay its shimmer for that event (the cold-launch case is driven by unread).
     private(set) var inboxShimmerNonce = 0
 
+    /// Where a tapped notification wants to land (a specific drawing or friend).
+    /// ComposerView opens the right sheet; the sheet consumes the detail and
+    /// clears it — never a generic home-screen dump.
+    var pendingRoute: NotificationRoute?
+
     /// The notification-permission flow (soft ask, live OS status, feed-nudge state).
     /// Sending never depends on it.
     @ObservationIgnored let notifications = NotificationGate()
@@ -177,7 +182,7 @@ final class AppModel {
         guard profile != nil else { return }   // finish onboarding first
 
         await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
-        await refreshFriends()
+        await PushNotifier.notifyNewFriends(await refreshFriends())   // bookkeeping; banners gate off
         await pullIncoming()
         await flushOutbox()
         WidgetCenter.shared.reloadAllTimelines()   // cold-launch catch-up; see onForeground
@@ -193,7 +198,9 @@ final class AppModel {
             // self-heals if the very first attempt failed (e.g. before the
             // recipientID index existed), so the recipient's widget gets pushes.
             await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
-            await refreshFriends()   // pick up friends added by the other party
+            // Pick up friends added by the other party (bookkeeping; banners gate off
+            // while foregrounded — the friends list itself is the cue).
+            await PushNotifier.notifyNewFriends(await refreshFriends())
             await pullIncoming()
             await flushOutbox()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // warm open with unread → shimmer
@@ -222,16 +229,22 @@ final class AppModel {
     func handlePush() async -> Bool {
         if case .available = account {} else { account = await service.accountState() }
         guard case let .available(userID) = account else { return false }
-        await refreshFriends()   // a push may mean a new friendship, not just a drawing
-        let count = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
-        let reactions = (try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))) ?? 0
+        let newFriends = await refreshFriends()   // a push may mean a new friendship
+        let drawings = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
+        let reactions = (try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
         refreshInboxUnread()
-        if count > 0 {
+        if !drawings.isEmpty {
             WidgetCenter.shared.reloadAllTimelines()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
             notifications.noteReceivedFromFriend()          // the one allowed re-prime
         }
-        return count > 0 || reactions > 0
+        // The visible half of the same push (permission + per-type toggles + the
+        // never-notify-the-actor guards live inside the notifier).
+        await PushNotifier.notifyNewFriends(newFriends)
+        await PushNotifier.notifyDrawings(drawings)
+        await PushNotifier.notifyReactions(reactions,
+                                           selfIDs: [userID, participantID(for: userID)])
+        return !drawings.isEmpty || !reactions.isEmpty || !newFriends.isEmpty
     }
 
     // MARK: - Onboarding
@@ -344,13 +357,16 @@ final class AppModel {
     func addFriend(byCode code: String) async throws {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
         try await service.redeemCode(code, myID: userID, myParticipantID: participantID(for: userID))
-        await refreshFriends()
+        // I typed the code — I'm the actor. Whatever this refresh discovers is
+        // self-initiated, so the "connected with you" push never echoes back to me.
+        let added = await refreshFriends()
+        added.forEach { PushNotifier.markFriendshipSelfInitiated($0.id) }
         // First successful pairing makes the loop real — prime once if that's first.
         notifications.noteLoopBecameReal()
     }
 
     /// Public refresh for the friends screen (pull the latest roster from CloudKit).
-    func reloadFriends() async { await refreshFriends() }
+    func reloadFriends() async { await PushNotifier.notifyNewFriends(await refreshFriends()) }
 
     /// Remove a friend on both sides (deletes the shared Friendship record), and
     /// update the local roster immediately.
@@ -361,16 +377,22 @@ final class AppModel {
         GridStore.shared.saveRoster(friends)
     }
 
-    private func refreshFriends() async {
-        guard case let .available(userID) = account else { return }
+    /// Refresh the roster from CloudKit. Returns friends that are NEW relative to
+    /// what this device already knew — the "someone connected with you" signal.
+    @discardableResult
+    private func refreshFriends() async -> [FriendInfo] {
+        guard case let .available(userID) = account else { return [] }
         do {
             let list = try await service.fetchFriends(myID: userID, myParticipantID: participantID(for: userID))
+            let known = Set(friends.map(\.id))
             friends = list
             GridStore.shared.saveRoster(list)
             seedRecipientSelectionIfNeeded()   // ready before the inline strip appears
             if lastError?.hasPrefix("Friends fetch:") == true { lastError = nil }
+            return list.filter { !known.contains($0.id) }
         } catch {
             lastError = "Friends fetch: \(error.localizedDescription)"
+            return []
         }
     }
 
@@ -600,12 +622,15 @@ final class AppModel {
     private func pullIncoming() async {
         guard case let .available(userID) = account else { return }
         do {
-            let count = try await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))
+            let drawings = try await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))
             if lastError?.hasPrefix("Incoming fetch:") == true { lastError = nil }
-            if count > 0 {
+            if !drawings.isEmpty {
                 WidgetCenter.shared.reloadAllTimelines()
                 notifications.noteReceivedFromFriend()   // the one allowed re-prime
             }
+            // Foreground pulls post no banners (the notifier suppresses them), but
+            // its bookkeeping must still run so first-dotdot copy can't fire late.
+            await PushNotifier.notifyDrawings(drawings)
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }

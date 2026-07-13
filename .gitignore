@@ -21,3 +21,4 @@ DerivedData/
 # CocoaPods / Carthage (not used here, but safe defaults)
 Pods/
 Carthage/Build/
+Notification Sound/

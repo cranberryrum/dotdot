@@ -9,6 +9,7 @@
 
 import CloudKit
 import UIKit
+import UserNotifications
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         // Silent CloudKit pushes need no user permission, just registration.
         application.registerForRemoteNotifications()
+        UNUserNotificationCenter.current().delegate = self
         return true
     }
 
@@ -43,5 +45,28 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
         // Non-fatal: the app still fetches on launch/foreground.
+    }
+}
+
+// MARK: - Visible notification behavior
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Foreground suppression: while the app is open, the in-app cues (wordmark
+    /// shimmer, feeds, widget) carry arrivals — no banner over the composer.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        []
+    }
+
+    /// A tap lands somewhere specific: the drawing, the friend, or the reacted-to
+    /// dotdot in sent — never a generic home screen.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        guard let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+        await MainActor.run { AppModel.shared.pendingRoute = route }
     }
 }

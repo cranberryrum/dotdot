@@ -87,6 +87,21 @@ struct ComposerView: View {
             guard url.scheme == "dotdot", url.host == "inbox" else { return }
             activeSheet = .inbox
         }
+        // A tapped notification lands somewhere specific: the inbox consumes the
+        // drawing routes (peek / scroll-to); the friend route opens the friends sheet.
+        .onChange(of: appModel.pendingRoute) { _, route in openRoute(route) }
+        .onAppear { openRoute(appModel.pendingRoute) }   // cold launch from a tap
+    }
+
+    private func openRoute(_ route: NotificationRoute?) {
+        guard let route else { return }
+        switch route {
+        case .receivedDrawing, .sentDrawing:
+            activeSheet = .inbox   // InboxView consumes + clears the detail
+        case .friend:
+            activeSheet = .addFriend
+            appModel.pendingRoute = nil
+        }
     }
 
     private func scheduleNotificationPriming() {

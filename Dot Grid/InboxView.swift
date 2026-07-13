@@ -49,6 +49,7 @@ struct InboxView: View {
     @State private var detent: PresentationDetent = .large
     @State private var showNotifPriming = false
     @State private var balloons: [Balloon] = []
+    @State private var scrollTarget: String?   // entry id a notification tap wants visible
     @Namespace private var tabPill
 
     var body: some View {
@@ -139,6 +140,33 @@ struct InboxView: View {
         received = GridStore.shared.receivedHistory()
         sent = GridStore.shared.sentHistory()
         appModel.markInboxSeen()   // opening the inbox clears unread + stops the shimmer
+        consumePendingRoute()
+    }
+
+    /// Land a tapped notification on its exact target: peek the received drawing,
+    /// or switch to sent and scroll to the reacted-to one.
+    private func consumePendingRoute() {
+        guard let route = appModel.pendingRoute else { return }
+        switch route {
+        case .receivedDrawing(let senderID, let sentAt):
+            tab = .received
+            if let drawing = received.first(where: {
+                $0.senderID == senderID && abs($0.sentAt.timeIntervalSince(sentAt)) < 1
+            }) {
+                let entry = InboxEntry(
+                    id: "r-\(drawing.senderID)-\(drawing.sentAt.timeIntervalSince1970)",
+                    drawing: drawing, token: drawing.token, title: drawing.senderName
+                )
+                withAnimation(Motion.pop) { peek = entry }
+            }
+            appModel.pendingRoute = nil
+        case .sentDrawing(let messageID):
+            tab = .sent
+            scrollTarget = "s-\(messageID)"
+            appModel.pendingRoute = nil
+        case .friend:
+            break   // the friends sheet handles this route
+        }
     }
 
     // MARK: Header + sticky tab
@@ -213,6 +241,24 @@ struct InboxView: View {
     }
 
     private var feed: some View {
+        ScrollViewReader { proxy in
+            feedScroll
+                .onChange(of: scrollTarget) { _, target in scrollToTarget(target, proxy: proxy) }
+                .onAppear { scrollToTarget(scrollTarget, proxy: proxy) }
+        }
+    }
+
+    /// Give layout a beat, then bring the notification's target card into view.
+    private func scrollToTarget(_ target: String?, proxy: ScrollViewProxy) {
+        guard let target else { return }
+        Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            withAnimation(Motion.settle) { proxy.scrollTo(target, anchor: .center) }
+            scrollTarget = nil
+        }
+    }
+
+    private var feedScroll: some View {
         ScrollView {
             if entries.isEmpty {
                 emptyState

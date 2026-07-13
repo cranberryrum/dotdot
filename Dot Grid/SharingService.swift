@@ -360,8 +360,9 @@ final class SharingService {
     // MARK: - Receiving
 
     /// Fetch drawings addressed to me since the last fetch, store each into the
-    /// App Group (per sender + latest), and advance the high-water mark.
-    func fetchIncoming(recipientIDs: [String]) async throws -> Int {
+    /// App Group (per sender + latest), and advance the high-water mark. Returns
+    /// the fetched drawings so callers can surface notifications for them.
+    func fetchIncoming(recipientIDs: [String]) async throws -> [DisplayDrawing] {
         let defaults = UserDefaults.standard
         let since = (defaults.object(forKey: lastFetchKey) as? Date) ?? .distantPast
 
@@ -377,7 +378,7 @@ final class SharingService {
         }
 
         var newest = since
-        var count = 0
+        var fetched: [DisplayDrawing] = []
         let records = recordsByID.values.sorted {
             (($0["sentAt"] as? Date) ?? .distantPast) < (($1["sentAt"] as? Date) ?? .distantPast)
         }
@@ -412,10 +413,10 @@ final class SharingService {
             }
             GridStore.shared.saveReceived(drawing)
             newest = max(newest, sentAt)
-            count += 1
+            fetched.append(drawing)
         }
-        if count > 0 { defaults.set(newest, forKey: lastFetchKey) }
-        return count
+        if !fetched.isEmpty { defaults.set(newest, forKey: lastFetchKey) }
+        return fetched
     }
 
     // MARK: - Reactions
@@ -453,9 +454,16 @@ final class SharingService {
         _ = try? await db.deleteRecord(withID: recordID)
     }
 
+    /// One freshly fetched reaction, with enough context to notify about it.
+    struct FetchedReaction {
+        let info: ReactionInfo
+        let messageID: String?
+    }
+
     /// Fetch reactions to dotdots I sent since the last fetch and attach them to the
-    /// sent feed. Mirrors `fetchIncoming` (high-water mark on the reaction's save time).
-    func fetchReactions(recipientIDs: [String]) async throws -> Int {
+    /// sent feed. Mirrors `fetchIncoming` (high-water mark on the reaction's save
+    /// time). Returns the fetched reactions so callers can surface notifications.
+    func fetchReactions(recipientIDs: [String]) async throws -> [FetchedReaction] {
         let defaults = UserDefaults.standard
         let since = (defaults.object(forKey: lastReactionFetchKey) as? Date) ?? .distantPast
 
@@ -471,7 +479,7 @@ final class SharingService {
         }
 
         var newest = since
-        var count = 0
+        var fetched: [FetchedReaction] = []
         for record in recordsByID.values {
             guard let emoji = record["emoji"] as? String,
                   let reactorID = record["reactorID"] as? String else { continue }
@@ -482,16 +490,17 @@ final class SharingService {
                 reactorName: record["reactorName"] as? String ?? "friend",
                 at: at
             )
+            let messageID = record["messageID"] as? String
             GridStore.shared.applyIncomingReaction(
                 reaction,
-                messageID: record["messageID"] as? String,
+                messageID: messageID,
                 drawingSentAt: (record["drawingSentAt"] as? Date) ?? .distantPast
             )
             newest = max(newest, at)
-            count += 1
+            fetched.append(FetchedReaction(info: reaction, messageID: messageID))
         }
-        if count > 0 { defaults.set(newest, forKey: lastReactionFetchKey) }
-        return count
+        if !fetched.isEmpty { defaults.set(newest, forKey: lastReactionFetchKey) }
+        return fetched
     }
 
     // MARK: - Subscription (push)
