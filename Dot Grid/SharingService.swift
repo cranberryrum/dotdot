@@ -317,9 +317,23 @@ final class SharingService {
     /// Write one Drawing record per recipient (dots inline, photo as a CKAsset).
     /// Returns the recipient IDs that failed so the caller can re-queue them.
     /// Retries transient errors briefly.
+    /// What became of one send attempt: which recipients still need the record,
+    /// the underlying error (so it can finally be SEEN in the debug panel), and
+    /// whether retrying later can help. Swallowing errors here is what let the
+    /// outbox rot silently.
+    struct SendResult {
+        var failedRecipientIDs: [String] = []
+        var lastError: Error?
+        /// True when a retry can't fix it (bad record, quota, permissions) — the
+        /// caller should give up instead of burning attempts.
+        var isTerminal = false
+
+        var succeeded: Bool { failedRecipientIDs.isEmpty }
+    }
+
     func sendMessage(kind: MessageKind, grid: Grid?, imageData: Data?,
                      to recipientIDs: [String], from profile: Profile, senderID: String,
-                     messageID: String? = nil) async -> [String] {
+                     messageID: String? = nil) async -> SendResult {
         // For photos, stage the (already downscaled) JPEG to a temp file once; each
         // record gets its own CKAsset pointing at it.
         var assetURL: URL?
@@ -327,16 +341,24 @@ final class SharingService {
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("jpg")
-            if (try? imageData.write(to: url)) != nil { assetURL = url } else { return recipientIDs }
+            if (try? imageData.write(to: url)) != nil {
+                assetURL = url
+            } else {
+                return SendResult(failedRecipientIDs: recipientIDs,
+                                  lastError: CocoaError(.fileWriteUnknown), isTerminal: true)
+            }
         }
         defer { if let assetURL { try? FileManager.default.removeItem(at: assetURL) } }
 
         let gridData = (kind == .dots) ? (grid.flatMap { try? JSONEncoder().encode($0) }) : nil
-        if kind == .dots && gridData == nil { return recipientIDs }
+        if kind == .dots && gridData == nil {
+            return SendResult(failedRecipientIDs: recipientIDs,
+                              lastError: CocoaError(.coderInvalidValue), isTerminal: true)
+        }
 
-        var failed: [String] = []
+        var result = SendResult()
         for recipientID in recipientIDs {
-            let ok = await withBackoff(maxAttempts: 3) {
+            let error = await withBackoff(maxAttempts: 3) {
                 let record = CKRecord(recordType: RT.drawing)
                 record["recipientID"] = recipientID as CKRecordValue
                 record["senderID"] = senderID as CKRecordValue
@@ -352,9 +374,13 @@ final class SharingService {
                 if let assetURL { record["imageAsset"] = CKAsset(fileURL: assetURL) }
                 _ = try await self.db.save(record)
             }
-            if !ok { failed.append(recipientID) }
+            if let error {
+                result.failedRecipientIDs.append(recipientID)
+                result.lastError = error
+                if let ckError = error as? CKError { result.isTerminal = !ckError.isRetryable }
+            }
         }
-        return failed
+        return result
     }
 
     // MARK: - Receiving
@@ -433,7 +459,7 @@ final class SharingService {
     func sendReaction(emoji: String, messageID: String?, drawingSentAt: Date,
                       to recipientID: String, from profile: Profile, reactorID: String) async -> Bool {
         let recordID = reactionRecordID(reactorID: reactorID, messageID: messageID, drawingSentAt: drawingSentAt)
-        return await withBackoff(maxAttempts: 3) {
+        let error = await withBackoff(maxAttempts: 3) {
             // Upsert: mutate the existing record if I reacted before, else create it.
             let record = (try? await self.db.record(for: recordID)) ?? CKRecord(recordType: RT.reaction, recordID: recordID)
             record["emoji"] = emoji as CKRecordValue
@@ -446,6 +472,7 @@ final class SharingService {
             record["sentAt"] = Date() as CKRecordValue
             _ = try await self.db.save(record)
         }
+        return error == nil
     }
 
     /// Un-react: best-effort delete of my reaction record.
@@ -579,25 +606,29 @@ final class SharingService {
         defaults.set(stamps, forKey: attemptsKey)
     }
 
-    private func withBackoff(maxAttempts: Int, _ work: @escaping () async throws -> Void) async -> Bool {
+    /// Runs `work` with short in-place backoff. Returns nil on success, or the
+    /// LAST error — callers surface it instead of letting failures vanish.
+    private func withBackoff(maxAttempts: Int, _ work: @escaping () async throws -> Void) async -> Error? {
         var delay: UInt64 = 400_000_000   // 0.4s
+        var lastError: Error?
         for attempt in 1...maxAttempts {
             do {
                 try await work()
-                return true
+                return nil
             } catch let error as CKError where error.isRetryable && attempt < maxAttempts {
+                lastError = error
                 let suggested = error.retryAfterSeconds.map { UInt64($0 * 1_000_000_000) } ?? delay
                 try? await Task.sleep(nanoseconds: suggested)
                 delay *= 2
             } catch {
-                return false
+                return error
             }
         }
-        return false
+        return lastError
     }
 }
 
-private extension CKError {
+extension CKError {
     var isRetryable: Bool {
         switch code {
         case .networkUnavailable, .networkFailure, .serviceUnavailable,

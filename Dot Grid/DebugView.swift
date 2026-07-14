@@ -66,6 +66,36 @@ struct DebugView: View {
                 Section("Sending") {
                     row("Pending sends", "\(appModel.outbox.count)")
                     row("Last recipients", appModel.lastRecipientIDs.isEmpty ? "—" : "\(appModel.lastRecipientIDs.count)")
+                    ForEach(appModel.outbox) { item in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("\(item.kind.rawValue) → \(item.recipientIDs.count) recipient\(item.recipientIDs.count == 1 ? "" : "s")")
+                                    .font(.callout)
+                                Spacer()
+                                Text("attempts \(item.attempts)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("queued \(item.createdAt.formatted(.relative(presentation: .named)))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                            if let error = item.lastErrorDescription {
+                                Text(error)
+                                    .font(.caption2).foregroundStyle(.red)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    if !appModel.outbox.isEmpty {
+                        Button {
+                            Task { working = true; await appModel.flushOutbox(); working = false }
+                        } label: {
+                            HStack {
+                                Text("Flush now")
+                                Spacer()
+                                if working { ProgressView() }
+                            }
+                        }
+                        .disabled(working)
+                    }
                 }
                 Section("First-time hints") {
                     Toggle("Replay first-time hints", isOn: $replayFirstRuns)

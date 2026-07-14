@@ -169,4 +169,31 @@ struct QueuedSend: Codable, Equatable, Identifiable {
     var senderName: String
     var token: IdentityToken
     var createdAt: Date
+    /// Flush attempts so far — the retry machinery gives up at a cap instead of
+    /// hammering forever; the debug panel shows it so a stuck queue is diagnosable.
+    var attempts: Int = 0
+    /// The last send error, human-readable — surfaced in the debug panel.
+    var lastErrorDescription: String?
+}
+
+extension QueuedSend {
+    // Tolerant decode (in an extension, so the memberwise init survives): queued
+    // blobs persisted before attempts/lastErrorDescription existed must still load.
+    enum CodingKeys: String, CodingKey {
+        case id, kind, grid, imageData, recipientIDs, senderName, token, createdAt,
+             attempts, lastErrorDescription
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = (try? c.decode(MessageKind.self, forKey: .kind)) ?? .dots
+        grid = try? c.decode(Grid.self, forKey: .grid)
+        imageData = try? c.decode(Data.self, forKey: .imageData)
+        recipientIDs = (try? c.decode([String].self, forKey: .recipientIDs)) ?? []
+        senderName = (try? c.decode(String.self, forKey: .senderName)) ?? ""
+        token = (try? c.decode(IdentityToken.self, forKey: .token)) ?? .placeholder
+        createdAt = (try? c.decode(Date.self, forKey: .createdAt)) ?? Date()
+        attempts = (try? c.decode(Int.self, forKey: .attempts)) ?? 0
+        lastErrorDescription = try? c.decode(String.self, forKey: .lastErrorDescription)
+    }
 }

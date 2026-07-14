@@ -521,15 +521,22 @@ final class AppModel {
         let senderID = participantID(for: profile.id)
         var remaining: [QueuedSend] = []
         for item in outbox {
-            let failed = await service.sendMessage(
+            let result = await service.sendMessage(
                 kind: item.kind, grid: item.grid, imageData: item.imageData,
                 to: item.recipientIDs, from: profile, senderID: senderID,
                 messageID: item.id
             )
-            if !failed.isEmpty {
+            if !result.succeeded {
                 var retry = item
-                retry.recipientIDs = failed
+                retry.recipientIDs = result.failedRecipientIDs
+                retry.attempts += 1
+                retry.lastErrorDescription = result.lastError?.localizedDescription
                 remaining.append(retry)
+                // Surface the cause — a silent queue is undebuggable (this is what
+                // let sends rot with the debug panel claiming "none").
+                if let error = result.lastError {
+                    lastError = "Send: \(error.localizedDescription)"
+                }
             }
         }
         outbox = remaining
