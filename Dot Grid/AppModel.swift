@@ -538,7 +538,25 @@ final class AppModel {
 
     /// A send stops retrying after this many flush attempts and goes .failed —
     /// resend resets the count.
-    static let sendAttemptCap = 5
+    nonisolated static let sendAttemptCap = 5
+
+    /// Pure transition for one outbox item after a flush attempt — kept free of
+    /// I/O so the retry policy is unit-testable.
+    enum FlushOutcome: Equatable {
+        case sent
+        case retrying(failedRecipientIDs: [String], attempts: Int)
+        case gaveUp(failedRecipientIDs: [String])
+    }
+
+    nonisolated static func flushOutcome(after result: SharingService.SendResult,
+                                         attemptsSoFar: Int) -> FlushOutcome {
+        guard !result.succeeded else { return .sent }
+        let attempts = attemptsSoFar + 1
+        if result.isTerminal || attempts >= sendAttemptCap {
+            return .gaveUp(failedRecipientIDs: result.failedRecipientIDs)
+        }
+        return .retrying(failedRecipientIDs: result.failedRecipientIDs, attempts: attempts)
+    }
 
     // MARK: - Retry machinery
 
@@ -612,30 +630,27 @@ final class AppModel {
                 to: item.recipientIDs, from: profile, senderID: senderID,
                 messageID: item.id
             )
-            if result.succeeded {
-                GridStore.shared.updateSentStatus(id: item.id, status: .sent)
-                continue
-            }
-            var retry = item
-            retry.recipientIDs = result.failedRecipientIDs
-            retry.attempts += 1
-            retry.lastErrorDescription = result.lastError?.localizedDescription
             // Surface the cause — a silent queue is undebuggable (this is what
             // let sends rot with the debug panel claiming "none").
             if let error = result.lastError {
                 lastError = "Send: \(error.localizedDescription)"
             }
-            // Give up on terminal errors or at the attempt cap; the sent tab shows
-            // "not sent yet" with a resend. Otherwise keep retrying, remembering
-            // exactly which recipients are still owed.
-            if result.isTerminal || retry.attempts >= Self.sendAttemptCap {
+            switch Self.flushOutcome(after: result, attemptsSoFar: item.attempts) {
+            case .sent:
+                GridStore.shared.updateSentStatus(id: item.id, status: .sent)
+            case .gaveUp(let failedIDs):
+                // The sent tab shows "not sent yet" with a resend.
                 GridStore.shared.updateSentStatus(id: item.id, status: .failed,
-                                                  failedRecipientIDs: result.failedRecipientIDs)
+                                                  failedRecipientIDs: failedIDs)
                 notifySendGaveUp(messageID: item.id)   // only on giving up, never per retry
-            } else {
+            case .retrying(let failedIDs, let attempts):
+                var retry = item
+                retry.recipientIDs = failedIDs
+                retry.attempts = attempts
+                retry.lastErrorDescription = result.lastError?.localizedDescription
                 remaining.append(retry)
                 GridStore.shared.updateSentStatus(id: item.id, status: .sending,
-                                                  failedRecipientIDs: result.failedRecipientIDs)
+                                                  failedRecipientIDs: failedIDs)
             }
         }
         outbox = remaining

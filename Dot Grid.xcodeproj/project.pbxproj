@@ -66,13 +66,6 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		D07A6E1E000000000000000F /* Exceptions for "DotGridNotificationService" folder in "DotGridNotificationService" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = D07A6E1E0000000000000004 /* DotGridNotificationService */;
-		};
 		D07A6E1D000000000000000F /* Exceptions for "DotGridWidget" folder in "DotGridWidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -86,6 +79,13 @@
 				Info.plist,
 			);
 			target = 480D04AC2FDAA3C900C6DA43 /* Dot Grid */;
+		};
+		D07A6E1E000000000000000F /* Exceptions for "DotGridNotificationService" folder in "DotGridNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D07A6E1E0000000000000004 /* DotGridNotificationService */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -306,8 +306,8 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				D07A6E1E0000000000000002 /* DotGridNotificationService */,
 				D07A6E1D0000000000000003 /* Shared */,
+				D07A6E1E0000000000000002 /* DotGridNotificationService */,
 			);
 			name = DotGridNotificationService;
 			packageProductDependencies = (
@@ -799,8 +799,6 @@
 			};
 			name = Release;
 		};
-/* End XCBuildConfiguration section */
-
 		D07A6E1E000000000000000D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -861,6 +859,8 @@
 			};
 			name = Release;
 		};
+/* End XCBuildConfiguration section */
+
 /* Begin XCConfigurationList section */
 		480D04A82FDAA3C900C6DA43 /* Build configuration list for PBXProject "Dot Grid" */ = {
 			isa = XCConfigurationList;
@@ -898,20 +898,20 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		D07A6E1E000000000000000C /* Build configuration list for PBXNativeTarget "DotGridNotificationService" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				D07A6E1E000000000000000D /* Debug */,
-				D07A6E1E000000000000000E /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		D07A6E1D000000000000000C /* Build configuration list for PBXNativeTarget "DotGridWidgetExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				D07A6E1D000000000000000D /* Debug */,
 				D07A6E1D000000000000000E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D07A6E1E000000000000000C /* Build configuration list for PBXNativeTarget "DotGridNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D07A6E1E000000000000000D /* Debug */,
+				D07A6E1E000000000000000E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
