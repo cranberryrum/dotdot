@@ -7,6 +7,7 @@
 //  widget. The app also fetches on launch/foreground, so push is best-effort only.
 //
 
+import BackgroundTasks
 import CloudKit
 import UIKit
 import UserNotifications
@@ -19,7 +20,30 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Silent CloudKit pushes need no user permission, just registration.
         application.registerForRemoteNotifications()
         UNUserNotificationCenter.current().delegate = self
+        registerBackgroundFlush()
         return true
+    }
+
+    /// Background outbox drain: iOS grants a short window at a time of its
+    /// choosing; the handler flushes and re-asks while anything remains. The
+    /// foreground paths stay the guarantee — this just means a queued send no
+    /// longer needs the app OPEN to leave the phone.
+    private func registerBackgroundFlush() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: AppModel.flushTaskID, using: nil) { task in
+            guard let refresh = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            let work = Task { @MainActor in
+                await AppModel.shared.flushOutbox()
+                if !AppModel.shared.outbox.isEmpty { AppModel.scheduleBackgroundFlush() }
+                refresh.setTaskCompleted(success: true)
+            }
+            refresh.expirationHandler = {
+                work.cancel()
+                refresh.setTaskCompleted(success: false)
+            }
+        }
     }
 
     func application(

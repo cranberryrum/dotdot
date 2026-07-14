@@ -7,6 +7,7 @@
 //  send queue. The widget never sees this — it only reads GridStore.
 //
 
+import BackgroundTasks
 import Foundation
 import Network
 import SwiftUI
@@ -513,7 +514,7 @@ final class AppModel {
         outbox.append(queued)
         GridStore.shared.saveOutbox(outbox)
 
-        Task { await flushOutbox() }
+        Task { await flushWithProtection() }
     }
 
     /// True when there are sends waiting on connectivity.
@@ -522,6 +523,67 @@ final class AppModel {
     /// A send stops retrying after this many flush attempts and goes .failed —
     /// resend resets the count.
     static let sendAttemptCap = 5
+
+    // MARK: - Retry machinery
+
+    /// The registered BGAppRefreshTask identifier (also in Info.plist).
+    static let flushTaskID = "com.kolteaditya.dotgrid.flush"
+
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+
+    /// Foreground retry loop: while anything is queued, back off 5s → 15s → 60s,
+    /// then hold at 5 min. Runs only while the app is active; cancelled when the
+    /// queue drains or the app backgrounds (the BG refresh takes over there).
+    private func scheduleRetryLoop() {
+        guard retryTask == nil, !outbox.isEmpty,
+              UIApplication.shared.applicationState == .active else { return }
+        retryTask = Task {
+            let steps: [Double] = [5, 15, 60]
+            var attempt = 0
+            while !Task.isCancelled && !outbox.isEmpty {
+                let delay = attempt < steps.count ? steps[attempt] : 300
+                attempt += 1
+                try? await Task.sleep(for: .seconds(delay))
+                if Task.isCancelled || outbox.isEmpty { break }
+                if isOnline { await flushOutbox() }
+            }
+            retryTask = nil
+        }
+    }
+
+    private func cancelRetryLoop() {
+        retryTask?.cancel()
+        retryTask = nil
+    }
+
+    /// Backgrounding: stop the foreground loop and hand any unfinished sends to
+    /// the system's background refresh (best effort, but no longer nothing).
+    func onBackground() {
+        cancelRetryLoop()
+        if !outbox.isEmpty { Self.scheduleBackgroundFlush() }
+    }
+
+    /// Ask iOS for a background window to drain the outbox. The system decides
+    /// when (or whether) it runs — the foreground paths remain the guarantee.
+    static func scheduleBackgroundFlush() {
+        let request = BGAppRefreshTaskRequest(identifier: flushTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 60)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    /// Flush wrapped in a UIKit background task, so swiping the app away right
+    /// after tapping send doesn't kill the upload mid-flight.
+    func flushWithProtection() async {
+        var token = UIBackgroundTaskIdentifier.invalid
+        token = UIApplication.shared.beginBackgroundTask(withName: "dotdot.flush") {
+            UIApplication.shared.endBackgroundTask(token)
+            token = .invalid
+        }
+        await flushOutbox()
+        if token != .invalid {
+            UIApplication.shared.endBackgroundTask(token)
+        }
+    }
 
     func flushOutbox() async {
         await flushReactions()
@@ -562,6 +624,8 @@ final class AppModel {
         }
         outbox = remaining
         GridStore.shared.saveOutbox(outbox)
+        // Anything left keeps retrying on the foreground backoff loop.
+        if !outbox.isEmpty { scheduleRetryLoop() }
     }
 
     /// A send just went .failed. Foregrounded → toast with a retry; backgrounded →
@@ -598,7 +662,7 @@ final class AppModel {
         }
         GridStore.shared.saveOutbox(outbox)
         GridStore.shared.updateSentStatus(id: id, status: .sending)
-        Task { await flushOutbox() }
+        Task { await flushWithProtection() }
     }
 
     // MARK: - Reactions

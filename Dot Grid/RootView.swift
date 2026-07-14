@@ -28,6 +28,7 @@ struct RootView: View {
         .task { appModel.start() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await appModel.onForeground() } }
+            if phase == .background { appModel.onBackground() }   // hand sends to BG refresh
         }
         .overlay(alignment: .top) { toastOverlay }
     }

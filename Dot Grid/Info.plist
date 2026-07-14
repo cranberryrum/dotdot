@@ -28,8 +28,13 @@
 		<string>HankenGrotesk-MediumItalic.ttf</string>
 		<string>HankenGrotesk-ExtraLightItalic.ttf</string>
 	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.kolteaditya.dotgrid.flush</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>fetch</string>
 		<string>remote-notification</string>
 	</array>
 </dict>
