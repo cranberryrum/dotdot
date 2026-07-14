@@ -553,6 +553,7 @@ final class AppModel {
             if result.isTerminal || retry.attempts >= Self.sendAttemptCap {
                 GridStore.shared.updateSentStatus(id: item.id, status: .failed,
                                                   failedRecipientIDs: result.failedRecipientIDs)
+                notifySendGaveUp(messageID: item.id)   // only on giving up, never per retry
             } else {
                 remaining.append(retry)
                 GridStore.shared.updateSentStatus(id: item.id, status: .sending,
@@ -561,6 +562,19 @@ final class AppModel {
         }
         outbox = remaining
         GridStore.shared.saveOutbox(outbox)
+    }
+
+    /// A send just went .failed. Foregrounded → toast with a retry; backgrounded →
+    /// one local notification routed to the drawing in sent (the resend lives there).
+    private func notifySendGaveUp(messageID: String) {
+        if UIApplication.shared.applicationState == .active {
+            showToast("couldn't send your dotdot", icon: "exclamationmark.triangle.fill",
+                      actionTitle: "retry") { [weak self] in
+                self?.resendMessage(id: messageID)
+            }
+        } else {
+            Task { await PushNotifier.notifySendFailed(messageID: messageID) }
+        }
     }
 
     /// Resend from the sent tab: retarget exactly the recipients still owed, reset

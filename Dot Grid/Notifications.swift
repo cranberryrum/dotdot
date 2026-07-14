@@ -166,6 +166,21 @@ enum PushNotifier {
         }
     }
 
+    // MARK: Send failures (your own sends, so no per-type friend toggle)
+
+    /// A send gave up (terminal error or attempt cap) while the app was in the
+    /// background — one alert, routed straight to the drawing in sent, where the
+    /// resend button lives. Foreground give-ups use a toast instead (AppModel).
+    static func notifySendFailed(messageID: String) async {
+        guard UIApplication.shared.applicationState != .active else { return }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        guard settings.authorizationStatus == .authorized else { return }
+        await post(identifier: "sendfailed-\(messageID)", thread: "sendfailed",
+                   body: "your dotdot didn't send. tap to retry",
+                   sound: .default, count: 1,
+                   route: .sentDrawing(messageID: messageID))
+    }
+
     // MARK: Gates
 
     /// A banner surfaces only when its toggle is on, permission is granted, and the
