@@ -356,31 +356,93 @@ final class SharingService {
                               lastError: CocoaError(.coderInvalidValue), isTerminal: true)
         }
 
-        var result = SendResult()
-        for recipientID in recipientIDs {
-            let error = await withBackoff(maxAttempts: 3) {
-                let record = CKRecord(recordType: RT.drawing)
-                record["recipientID"] = recipientID as CKRecordValue
-                record["senderID"] = senderID as CKRecordValue
-                record["senderName"] = profile.name as CKRecordValue
-                record["tokenSymbol"] = profile.token.symbol as CKRecordValue
-                record["tokenColor"] = profile.token.colorIndex as CKRecordValue
-                record["sentAt"] = Date() as CKRecordValue
-                record["kind"] = kind.rawValue as CKRecordValue
-                // Stable cross-device ID reactions point back at (needs no index —
-                // it just rides the record). Same ID on every recipient's copy.
-                if let messageID { record["messageID"] = messageID as CKRecordValue }
-                if let gridData { record["gridData"] = gridData as CKRecordValue }
-                if let assetURL { record["imageAsset"] = CKAsset(fileURL: assetURL) }
-                _ = try await self.db.save(record)
-            }
-            if let error {
-                result.failedRecipientIDs.append(recipientID)
-                result.lastError = error
-                if let ckError = error as? CKError { result.isTerminal = !ckError.isRetryable }
+        // ONE batch operation for every recipient (a photo to three friends was
+        // three sequential JPEG uploads before — the asset uploads once per op).
+        // withBackoff re-runs the batch for whichever recipients are still owed,
+        // honoring the server's retry-after.
+        func record(for recipientID: String) -> CKRecord {
+            let record = CKRecord(recordType: RT.drawing)
+            record["recipientID"] = recipientID as CKRecordValue
+            record["senderID"] = senderID as CKRecordValue
+            record["senderName"] = profile.name as CKRecordValue
+            record["tokenSymbol"] = profile.token.symbol as CKRecordValue
+            record["tokenColor"] = profile.token.colorIndex as CKRecordValue
+            record["sentAt"] = Date() as CKRecordValue
+            record["kind"] = kind.rawValue as CKRecordValue
+            // Stable cross-device ID reactions point back at (needs no index —
+            // it just rides the record). Same ID on every recipient's copy.
+            if let messageID { record["messageID"] = messageID as CKRecordValue }
+            if let gridData { record["gridData"] = gridData as CKRecordValue }
+            if let assetURL { record["imageAsset"] = CKAsset(fileURL: assetURL) }
+            return record
+        }
+
+        var pending = recipientIDs        // still owed a record
+        var terminal: [String] = []       // failed in a way retrying can't fix
+        var lastError: Error?
+
+        let backoffError = await withBackoff(maxAttempts: 3) {
+            let outcome = await self.saveDrawingBatch(pending.map { ($0, record(for: $0)) })
+            lastError = outcome.lastError ?? lastError
+            terminal.append(contentsOf: outcome.terminal)
+            pending = outcome.retryable
+            if !pending.isEmpty {
+                // Signal withBackoff to re-run the batch for the stragglers.
+                throw outcome.lastError ?? CKError(.networkFailure)
             }
         }
+        _ = backoffError   // already folded into lastError above
+
+        var result = SendResult()
+        result.failedRecipientIDs = pending + terminal
+        result.lastError = lastError
+        // Retrying later only helps if at least one failure was transient.
+        result.isTerminal = pending.isEmpty && !terminal.isEmpty
         return result
+    }
+
+    /// The per-batch outcome: who saved, who's worth retrying, who is a lost cause.
+    private struct BatchOutcome {
+        var retryable: [String] = []
+        var terminal: [String] = []
+        var lastError: Error?
+    }
+
+    /// Save all recipients' records in one non-atomic CKModifyRecordsOperation,
+    /// mapping per-record results back to per-recipient outcomes.
+    private func saveDrawingBatch(_ entries: [(recipientID: String, record: CKRecord)]) async -> BatchOutcome {
+        await withCheckedContinuation { (continuation: CheckedContinuation<BatchOutcome, Never>) in
+            let recipientByRecordID = Dictionary(uniqueKeysWithValues: entries.map { ($0.record.recordID, $0.recipientID) })
+            nonisolated(unsafe) var outcome = BatchOutcome()
+            let operation = CKModifyRecordsOperation(recordsToSave: entries.map(\.record))
+            operation.isAtomic = false                       // deliver to whoever we can
+            operation.qualityOfService = .userInitiated      // the user just tapped send
+            operation.perRecordSaveBlock = { recordID, result in
+                guard case .failure(let error) = result,
+                      let recipientID = recipientByRecordID[recordID] else { return }
+                outcome.lastError = error
+                if let ckError = error as? CKError, !ckError.isRetryable {
+                    outcome.terminal.append(recipientID)
+                } else {
+                    outcome.retryable.append(recipientID)
+                }
+            }
+            operation.modifyRecordsResultBlock = { result in
+                if case .failure(let error) = result {
+                    // Whole-op failure (e.g. no network): everyone unresolved shares it.
+                    outcome.lastError = error
+                    let resolved = Set(outcome.retryable + outcome.terminal)
+                    let unresolved = entries.map(\.recipientID).filter { !resolved.contains($0) }
+                    if let ckError = error as? CKError, !ckError.isRetryable {
+                        outcome.terminal.append(contentsOf: unresolved)
+                    } else {
+                        outcome.retryable.append(contentsOf: unresolved)
+                    }
+                }
+                continuation.resume(returning: outcome)
+            }
+            db.add(operation)
+        }
     }
 
     // MARK: - Receiving
