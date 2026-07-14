@@ -98,9 +98,39 @@ struct GridStore {
 
     private func prependReceivedHistory(_ drawing: DisplayDrawing) {
         var items = receivedHistory()
+        // Idempotent: the notification service extension AND the app's fetch paths
+        // can both deliver the same record — the second arrival is a no-op (which
+        // also preserves any reaction already attached locally).
+        let duplicate = items.contains { existing in
+            if let messageID = drawing.messageID { return existing.messageID == messageID }
+            return existing.senderID == drawing.senderID && existing.sentAt == drawing.sentAt
+        }
+        guard !duplicate else { return }
         items.insert(drawing, at: 0)
         if items.count > Self.historyLimit { items = Array(items.prefix(Self.historyLimit)) }
         encode(items, forKey: Self.receivedHistoryKey)
+    }
+
+    // MARK: - Incoming fetch high-water mark (shared with the service extension)
+
+    private static let lastDrawingFetchKey = "lastDrawingFetch"
+
+    /// When the last incoming-drawings fetch reached. Lives in the App Group so the
+    /// app and the notification service extension share one clock; migrates the old
+    /// standard-defaults value on first read. The extension deliberately never
+    /// ADVANCES it — the app's fetch remains the source of truth, and the
+    /// idempotent saveReceived absorbs the overlap.
+    var lastDrawingFetch: Date? {
+        get {
+            if let date = defaults?.object(forKey: Self.lastDrawingFetchKey) as? Date { return date }
+            if let legacy = UserDefaults.standard.object(forKey: Self.lastDrawingFetchKey) as? Date {
+                defaults?.set(legacy, forKey: Self.lastDrawingFetchKey)
+                UserDefaults.standard.removeObject(forKey: Self.lastDrawingFetchKey)
+                return legacy
+            }
+            return nil
+        }
+        nonmutating set { defaults?.set(newValue, forKey: Self.lastDrawingFetchKey) }
     }
 
     /// Newest-first list of dotdots you sent.
@@ -194,7 +224,8 @@ struct GridStore {
     func clearSharedState() {
         guard let defaults else { return }
         for key in [Self.localEchoKey, Self.latestReceivedKey, Self.rosterKey, Self.profileKey,
-                    Self.outboxKey, Self.receivedHistoryKey, Self.sentHistoryKey, Self.latestReceivedAtKey] {
+                    Self.outboxKey, Self.receivedHistoryKey, Self.sentHistoryKey, Self.latestReceivedAtKey,
+                    Self.lastDrawingFetchKey] {
             defaults.removeObject(forKey: key)
         }
         for friend in roster() {

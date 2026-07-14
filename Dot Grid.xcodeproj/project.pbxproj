@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		D07A6E1D0000000000000009 /* DotGridWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D07A6E1D0000000000000001 /* DotGridWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D07A6E1E0000000000000009 /* DotGridNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D07A6E1E0000000000000001 /* DotGridNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,6 +33,13 @@
 			remoteGlobalIDString = D07A6E1D0000000000000004;
 			remoteInfo = DotGridWidgetExtension;
 		};
+		D07A6E1E000000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 480D04A52FDAA3C900C6DA43 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D07A6E1E0000000000000004;
+			remoteInfo = DotGridNotificationService;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -42,6 +50,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				D07A6E1D0000000000000009 /* DotGridWidgetExtension.appex in Embed Foundation Extensions */,
+				D07A6E1E0000000000000009 /* DotGridNotificationService.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -53,9 +62,17 @@
 		480D04BA2FDAA3CA00C6DA43 /* Dot GridTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Dot GridTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		480D04C42FDAA3CA00C6DA43 /* Dot GridUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Dot GridUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		D07A6E1D0000000000000001 /* DotGridWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DotGridWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D07A6E1E0000000000000001 /* DotGridNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = DotGridNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D07A6E1E000000000000000F /* Exceptions for "DotGridNotificationService" folder in "DotGridNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D07A6E1E0000000000000004 /* DotGridNotificationService */;
+		};
 		D07A6E1D000000000000000F /* Exceptions for "DotGridWidget" folder in "DotGridWidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -104,6 +121,14 @@
 			path = Shared;
 			sourceTree = "<group>";
 		};
+		D07A6E1E0000000000000002 /* DotGridNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D07A6E1E000000000000000F /* Exceptions for "DotGridNotificationService" folder in "DotGridNotificationService" target */,
+			);
+			path = DotGridNotificationService;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -135,6 +160,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D07A6E1E0000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -144,6 +176,7 @@
 				480D04AF2FDAA3C900C6DA43 /* Dot Grid */,
 				D07A6E1D0000000000000003 /* Shared */,
 				D07A6E1D0000000000000002 /* DotGridWidget */,
+				D07A6E1E0000000000000002 /* DotGridNotificationService */,
 				480D04BD2FDAA3CA00C6DA43 /* Dot GridTests */,
 				480D04C72FDAA3CA00C6DA43 /* Dot GridUITests */,
 				480D04AE2FDAA3C900C6DA43 /* Products */,
@@ -157,6 +190,7 @@
 				480D04BA2FDAA3CA00C6DA43 /* Dot GridTests.xctest */,
 				480D04C42FDAA3CA00C6DA43 /* Dot GridUITests.xctest */,
 				D07A6E1D0000000000000001 /* DotGridWidgetExtension.appex */,
+				D07A6E1E0000000000000001 /* DotGridNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -177,6 +211,7 @@
 			);
 			dependencies = (
 				D07A6E1D000000000000000B /* PBXTargetDependency */,
+				D07A6E1E000000000000000B /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				480D04AF2FDAA3C900C6DA43 /* Dot Grid */,
@@ -258,6 +293,29 @@
 			productReference = D07A6E1D0000000000000001 /* DotGridWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		D07A6E1E0000000000000004 /* DotGridNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D07A6E1E000000000000000C /* Build configuration list for PBXNativeTarget "DotGridNotificationService" */;
+			buildPhases = (
+				D07A6E1E0000000000000005 /* Sources */,
+				D07A6E1E0000000000000006 /* Frameworks */,
+				D07A6E1E0000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D07A6E1E0000000000000002 /* DotGridNotificationService */,
+				D07A6E1D0000000000000003 /* Shared */,
+			);
+			name = DotGridNotificationService;
+			packageProductDependencies = (
+			);
+			productName = DotGridNotificationService;
+			productReference = D07A6E1E0000000000000001 /* DotGridNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -297,6 +355,7 @@
 			targets = (
 				480D04AC2FDAA3C900C6DA43 /* Dot Grid */,
 				D07A6E1D0000000000000004 /* DotGridWidgetExtension */,
+				D07A6E1E0000000000000004 /* DotGridNotificationService */,
 				480D04B92FDAA3CA00C6DA43 /* Dot GridTests */,
 				480D04C32FDAA3CA00C6DA43 /* Dot GridUITests */,
 			);
@@ -326,6 +385,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D07A6E1D0000000000000007 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D07A6E1E0000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -363,6 +429,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		D07A6E1E0000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -380,6 +453,11 @@
 			isa = PBXTargetDependency;
 			target = D07A6E1D0000000000000004 /* DotGridWidgetExtension */;
 			targetProxy = D07A6E1D000000000000000A /* PBXContainerItemProxy */;
+		};
+		D07A6E1E000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D07A6E1E0000000000000004 /* DotGridNotificationService */;
+			targetProxy = D07A6E1E000000000000000A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -723,6 +801,66 @@
 		};
 /* End XCBuildConfiguration section */
 
+		D07A6E1E000000000000000D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = DotGridNotificationService/DotGridNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 5PYDBJJN92;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DotGridNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = dotdot;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kolteaditya.dotgrid.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D07A6E1E000000000000000E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = DotGridNotificationService/DotGridNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 5PYDBJJN92;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = DotGridNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = dotdot;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kolteaditya.dotgrid.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* Begin XCConfigurationList section */
 		480D04A82FDAA3C900C6DA43 /* Build configuration list for PBXProject "Dot Grid" */ = {
 			isa = XCConfigurationList;
@@ -756,6 +894,15 @@
 			buildConfigurations = (
 				480D04D52FDAA3CA00C6DA43 /* Debug */,
 				480D04D62FDAA3CA00C6DA43 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D07A6E1E000000000000000C /* Build configuration list for PBXNativeTarget "DotGridNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D07A6E1E000000000000000D /* Debug */,
+				D07A6E1E000000000000000E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

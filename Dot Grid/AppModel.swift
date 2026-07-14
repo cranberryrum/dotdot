@@ -136,7 +136,25 @@ final class AppModel {
         guard !didStart else { return }
         didStart = true
         startNetworkMonitor()
+        // Flipping the drawings/reactions alert toggles re-shapes the CloudKit
+        // subscriptions (visible ↔ silent) — the banner is server-side now, so the
+        // toggle must reach the server to actually silence it.
+        notifications.onAlertRoutingChanged = { [weak self] in
+            guard let self, case let .available(userID) = self.account else { return }
+            Task { await self.refreshPushSubscriptions(userID: userID) }
+        }
         Task { await bootstrap() }
+    }
+
+    /// (Re)assert the push subscriptions with the current per-type toggle shape:
+    /// visible + mutable when the toggle is on, silent (data-only) when off.
+    private func refreshPushSubscriptions(userID: String) async {
+        await service.ensureSubscription(
+            userID: userID,
+            participantID: participantID(for: userID),
+            drawingAlertsVisible: notifications.drawingAlerts,
+            reactionAlertsVisible: notifications.reactionAlerts
+        )
     }
 
     /// Full sync: account check, account-switch handling, identity, friends,
@@ -182,7 +200,7 @@ final class AppModel {
 
         guard profile != nil else { return }   // finish onboarding first
 
-        await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
+        await refreshPushSubscriptions(userID: userID)
         await PushNotifier.notifyNewFriends(await refreshFriends())   // bookkeeping; banners gate off
         await pullIncoming()
         await flushOutbox()
@@ -198,7 +216,7 @@ final class AppModel {
             // Re-assert the push subscription each foreground — idempotent, and it
             // self-heals if the very first attempt failed (e.g. before the
             // recipientID index existed), so the recipient's widget gets pushes.
-            await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
+            await refreshPushSubscriptions(userID: userID)
             // Pick up friends added by the other party (bookkeeping; banners gate off
             // while foregrounded — the friends list itself is the cue).
             await PushNotifier.notifyNewFriends(await refreshFriends())
@@ -239,12 +257,10 @@ final class AppModel {
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
             notifications.noteReceivedFromFriend()          // the one allowed re-prime
         }
-        // The visible half of the same push (permission + per-type toggles + the
-        // never-notify-the-actor guards live inside the notifier).
+        // Drawing/reaction banners are SERVER pushes now (rewritten by the service
+        // extension); locally we keep the connected banner + first-sender records.
         await PushNotifier.notifyNewFriends(newFriends)
-        await PushNotifier.notifyDrawings(drawings)
-        await PushNotifier.notifyReactions(reactions,
-                                           selfIDs: [userID, participantID(for: userID)])
+        PushNotifier.recordDrawingArrivals(drawings)
         return !drawings.isEmpty || !reactions.isEmpty || !newFriends.isEmpty
     }
 
@@ -257,7 +273,7 @@ final class AppModel {
         let saved = try await service.saveMyProfile(userID: userID, name: name, token: token, existing: profile)
         profile = saved
         GridStore.shared.saveProfile(saved)
-        await service.ensureSubscription(userID: userID, participantID: participantID(for: userID))
+        await refreshPushSubscriptions(userID: userID)
         await refreshFriends()
         await pullIncoming()
     }
@@ -757,9 +773,8 @@ final class AppModel {
                 WidgetCenter.shared.reloadAllTimelines()
                 notifications.noteReceivedFromFriend()   // the one allowed re-prime
             }
-            // Foreground pulls post no banners (the notifier suppresses them), but
-            // its bookkeeping must still run so first-dotdot copy can't fire late.
-            await PushNotifier.notifyDrawings(drawings)
+            // Bookkeeping so the extension's first-dotdot copy can't fire late.
+            PushNotifier.recordDrawingArrivals(drawings)
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }

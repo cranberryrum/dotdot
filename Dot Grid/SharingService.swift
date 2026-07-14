@@ -14,6 +14,19 @@
 //    • Drawing     fields: recipientID (QUERYABLE), sentAt (SORTABLE/QUERYABLE),
 //                  senderID, senderName, tokenSymbol, tokenColor, gridData
 //
+//  Subscriptions (created from code; deploy the schema to Production before any
+//  TestFlight build or the -v2 subscriptions will not exist for prod users):
+//    • drawings-to-<id>-v2   Drawing, recipientID == me. VISIBLE when the drawings
+//      alert toggle is on: alertLocalizationKey PUSH_DRAWING (args senderName),
+//      sound dotdot.caf, mutable content (rewritten by DotGridNotificationService),
+//      desiredKeys senderName/kind/senderID/sentAt/messageID; silent when off.
+//      Always shouldSendContentAvailable so the live app still wakes to fetch.
+//    • reactions-to-<id>-v2  Reaction, recipientID == me, creation + update.
+//      Same shape; localization key PUSH_REACTION (args reactorName), default sound.
+//    • friendships-of-<id>   Friendship, members CONTAINS me. Stays silent; the
+//      connected banner is posted locally (owner-only + once-per-friendship logic).
+//    The v1 silent drawing/reaction subscription IDs are deleted on ensure.
+//
 
 import CloudKit
 import Foundation
@@ -67,7 +80,6 @@ final class SharingService {
     }
 
     private let lastUserKey = "lastUserRecordName"
-    private let lastFetchKey = "lastDrawingFetch"
     private let lastReactionFetchKey = "lastReactionFetch"
     private let attemptsKey = "redeemAttempts"
     private let deviceIDKey = "dotdotDeviceID"
@@ -304,11 +316,14 @@ final class SharingService {
         // My profile.
         _ = try? await db.deleteRecord(withID: CKRecord.ID(recordName: userID))
 
-        // My push subscriptions (so this device stops receiving).
+        // My push subscriptions, both generations (so this device stops receiving).
         for id in ids {
-            _ = try? await db.deleteSubscription(withID: "drawings-to-\(subscriptionIDComponent(id))")
-            _ = try? await db.deleteSubscription(withID: "friendships-of-\(subscriptionIDComponent(id))")
-            _ = try? await db.deleteSubscription(withID: "reactions-to-\(subscriptionIDComponent(id))")
+            let component = subscriptionIDComponent(id)
+            for subscriptionID in ["drawings-to-\(component)", "drawings-to-\(component)-v2",
+                                   "friendships-of-\(component)",
+                                   "reactions-to-\(component)", "reactions-to-\(component)-v2"] {
+                _ = try? await db.deleteSubscription(withID: subscriptionID)
+            }
         }
     }
 
@@ -451,8 +466,7 @@ final class SharingService {
     /// App Group (per sender + latest), and advance the high-water mark. Returns
     /// the fetched drawings so callers can surface notifications for them.
     func fetchIncoming(recipientIDs: [String]) async throws -> [DisplayDrawing] {
-        let defaults = UserDefaults.standard
-        let since = (defaults.object(forKey: lastFetchKey) as? Date) ?? .distantPast
+        let since = GridStore.shared.lastDrawingFetch ?? .distantPast
 
         var recordsByID: [CKRecord.ID: CKRecord] = [:]
         for id in Set(recipientIDs) {
@@ -503,7 +517,7 @@ final class SharingService {
             newest = max(newest, sentAt)
             fetched.append(drawing)
         }
-        if !fetched.isEmpty { defaults.set(newest, forKey: lastFetchKey) }
+        if !fetched.isEmpty { GridStore.shared.lastDrawingFetch = newest }
         return fetched
     }
 
@@ -595,41 +609,77 @@ final class SharingService {
     // MARK: - Subscription (push)
 
     /// Subscribe to drawings addressed to me, new friendships involving me, AND
-    /// reactions to dotdots I sent — so both parties learn in real time. Idempotent.
-    func ensureSubscription(userID: String, participantID: String) async {
+    /// reactions to dotdots I sent — so both parties learn in real time. Idempotent
+    /// (CKModifySubscriptionsOperation updates same-ID subscriptions in place).
+    ///
+    /// Drawing/reaction pushes are VISIBLE when their alert toggle is on (banner
+    /// rendered server-side, rewritten by the service extension, delivered even to
+    /// a force-quit app) and silent when off — either way they stay
+    /// content-available so a live app wakes to fetch. The sender never receives
+    /// their own push: the predicates are all `recipientID == me`, and a sender's
+    /// records carry the FRIEND's id there.
+    func ensureSubscription(userID: String, participantID: String,
+                            drawingAlertsVisible: Bool, reactionAlertsVisible: Bool) async {
         for id in Set([userID, participantID]) {
-            await saveSilentSubscription(
-                id: "drawings-to-\(subscriptionIDComponent(id))",
+            let component = subscriptionIDComponent(id)
+
+            let drawings = CKQuerySubscription(
                 recordType: RT.drawing,
-                predicate: NSPredicate(format: "recipientID == %@", id)
+                predicate: NSPredicate(format: "recipientID == %@", id),
+                subscriptionID: "drawings-to-\(component)-v2",
+                options: [.firesOnRecordCreation]
             )
-            await saveSilentSubscription(
-                id: "friendships-of-\(subscriptionIDComponent(id))",
+            drawings.notificationInfo = drawingAlertsVisible
+                ? visibleInfo(localizationKey: "PUSH_DRAWING", args: ["senderName"],
+                              sound: "dotdot.caf",
+                              desiredKeys: ["senderName", "kind", "senderID", "sentAt", "messageID"])
+                : silentInfo()
+
+            let friendships = CKQuerySubscription(
                 recordType: RT.friendship,
-                predicate: NSPredicate(format: "members CONTAINS %@", id)
+                predicate: NSPredicate(format: "members CONTAINS %@", id),
+                subscriptionID: "friendships-of-\(component)",
+                options: [.firesOnRecordCreation]
             )
-            await saveSilentSubscription(
-                id: "reactions-to-\(subscriptionIDComponent(id))",
+            friendships.notificationInfo = silentInfo()   // connected banner stays local
+
+            let reactions = CKQuerySubscription(
                 recordType: RT.reaction,
                 predicate: NSPredicate(format: "recipientID == %@", id),
+                subscriptionID: "reactions-to-\(component)-v2",
                 // Update too: replacing a reaction mutates the SAME record.
                 options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+            )
+            reactions.notificationInfo = reactionAlertsVisible
+                ? visibleInfo(localizationKey: "PUSH_REACTION", args: ["reactorName"],
+                              sound: "default",
+                              desiredKeys: ["reactorName", "messageID"])
+                : silentInfo()
+
+            // Save the current generation and retire the v1 silent ones in one op.
+            _ = try? await db.modifySubscriptions(
+                saving: [drawings, friendships, reactions],
+                deleting: ["drawings-to-\(component)", "reactions-to-\(component)"]
             )
         }
     }
 
-    private func saveSilentSubscription(id: String, recordType: String, predicate: NSPredicate,
-                                        options: CKQuerySubscription.Options = [.firesOnRecordCreation]) async {
-        let subscription = CKQuerySubscription(
-            recordType: recordType,
-            predicate: predicate,
-            subscriptionID: id,
-            options: options
-        )
+    private func silentInfo() -> CKSubscription.NotificationInfo {
         let info = CKSubscription.NotificationInfo()
-        info.shouldSendContentAvailable = true   // silent push
-        subscription.notificationInfo = info
-        _ = try? await db.save(subscription)
+        info.shouldSendContentAvailable = true
+        return info
+    }
+
+    private func visibleInfo(localizationKey: String, args: [String], sound: String,
+                             desiredKeys: [CKRecord.FieldKey]) -> CKSubscription.NotificationInfo {
+        let info = CKSubscription.NotificationInfo()
+        info.alertLocalizationKey = localizationKey       // server-rendered fallback copy
+        info.alertLocalizationArgs = args
+        info.soundName = sound
+        info.desiredKeys = desiredKeys                    // ride the payload; no fetch needed for copy
+        info.shouldSendMutableContent = true              // the service extension rewrites the banner
+        info.shouldSendContentAvailable = true            // a live app still wakes to fetch
+        return info
     }
 
     // MARK: - Helpers

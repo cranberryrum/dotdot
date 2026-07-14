@@ -1,0 +1,5 @@
+/* Server-rendered push fallbacks — the notification service extension rewrites
+   these into full house-style copy; these show only if the extension can't run.
+   Lowercase, plain, no emojis, no em dashes. */
+"PUSH_DRAWING" = "%1$@ sent you something";
+"PUSH_REACTION" = "%1$@ reacted to your dotdot";

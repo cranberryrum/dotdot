@@ -53,16 +53,27 @@ final class NotificationGate {
 
     // MARK: - Per-type alert toggles (defaults ON; stored inverted so no-key = on).
     // Every visible push checks its toggle before surfacing — the toggles never
-    // touch the silent data flow.
+    // touch the silent data flow. Drawings/reactions banners are server pushes,
+    // so those toggles also re-shape the CloudKit subscription (via the hook).
+
+    /// AppModel re-asserts the CloudKit subscriptions when the server-side
+    /// alert types (drawings / reactions) flip.
+    var onAlertRoutingChanged: (() -> Void)?
 
     var drawingAlerts: Bool = true {
-        didSet { defaults.set(!drawingAlerts, forKey: Key.drawingsOff) }
+        didSet {
+            defaults.set(!drawingAlerts, forKey: Key.drawingsOff)
+            if drawingAlerts != oldValue { onAlertRoutingChanged?() }
+        }
     }
     var friendAlerts: Bool = true {
         didSet { defaults.set(!friendAlerts, forKey: Key.friendsOff) }
     }
     var reactionAlerts: Bool = true {
-        didSet { defaults.set(!reactionAlerts, forKey: Key.reactionsOff) }
+        didSet {
+            defaults.set(!reactionAlerts, forKey: Key.reactionsOff)
+            if reactionAlerts != oldValue { onAlertRoutingChanged?() }
+        }
     }
 
     private var hasPrimed: Bool { defaults.bool(forKey: Key.primed) }
