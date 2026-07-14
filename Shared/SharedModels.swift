@@ -132,29 +132,56 @@ struct ReactionInfo: Codable, Equatable, Identifiable {
 /// the payload (its `senderID` is empty — it's yours) and records who it went to.
 /// `recipients` is empty for a local-only send (no friends picked).
 struct SentMessage: Codable, Equatable, Identifiable {
+    /// The honest delivery state — the sent tab is the source of truth (the
+    /// composer's "sent!" is an optimistic flip).
+    enum SendStatus: String, Codable {
+        case sending     // queued / retrying
+        case sent        // every recipient's record reached CloudKit
+        case failed      // gave up (terminal error or attempt cap) — resendable
+        case localOnly   // no friends picked; nothing to deliver
+    }
+
     var id: String
     var drawing: DisplayDrawing
     var recipients: [FriendInfo]
     /// Emoji reactions from recipients, newest state per person.
     var reactions: [ReactionInfo] = []
+    var status: SendStatus = .sent
+    /// Recipients still missing the record (partial failures keep these even
+    /// while retrying, so a resend can target exactly who's owed).
+    var failedRecipientIDs: [String] = []
 
     var sentAt: Date { drawing.sentAt }
 
-    init(id: String, drawing: DisplayDrawing, recipients: [FriendInfo], reactions: [ReactionInfo] = []) {
+    init(id: String, drawing: DisplayDrawing, recipients: [FriendInfo],
+         reactions: [ReactionInfo] = [], status: SendStatus = .sent,
+         failedRecipientIDs: [String] = []) {
         self.id = id
         self.drawing = drawing
         self.recipients = recipients
         self.reactions = reactions
+        self.status = status
+        self.failedRecipientIDs = failedRecipientIDs
     }
 
-    // Tolerant decode: history saved before reactions shipped has no `reactions` key.
-    enum CodingKeys: String, CodingKey { case id, drawing, recipients, reactions }
+    // Tolerant decode: history saved before reactions/status shipped still loads —
+    // old entries read as .sent (they predate honest tracking), local-only sends
+    // (no recipients) read as .localOnly.
+    enum CodingKeys: String, CodingKey {
+        case id, drawing, recipients, reactions, status, failedRecipientIDs
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         drawing = try c.decode(DisplayDrawing.self, forKey: .drawing)
         recipients = (try? c.decode([FriendInfo].self, forKey: .recipients)) ?? []
         reactions = (try? c.decode([ReactionInfo].self, forKey: .reactions)) ?? []
+        failedRecipientIDs = (try? c.decode([String].self, forKey: .failedRecipientIDs)) ?? []
+        if let stored = try? c.decode(SendStatus.self, forKey: .status) {
+            status = stored
+        } else {
+            status = recipients.isEmpty ? .localOnly : .sent
+        }
     }
 }
 

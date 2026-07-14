@@ -479,7 +479,11 @@ final class AppModel {
         let recipients: [FriendInfo] = recipientIDs.map { id in
             friends.first { $0.id == id } ?? FriendInfo(id: id, name: "friend", token: .placeholder)
         }
-        GridStore.shared.appendSent(SentMessage(id: messageID, drawing: echo, recipients: recipients))
+        // Honest from birth: a real send starts as .sending and only flushOutbox
+        // promotes it to .sent; a local-only echo has nothing to deliver.
+        let willDeliver = profile != nil && !recipientIDs.isEmpty
+        GridStore.shared.appendSent(SentMessage(id: messageID, drawing: echo, recipients: recipients,
+                                                status: willDeliver ? .sending : .localOnly))
 
         WidgetCenter.shared.reloadAllTimelines()
 
@@ -515,6 +519,10 @@ final class AppModel {
     /// True when there are sends waiting on connectivity.
     var hasPendingSends: Bool { !outbox.isEmpty }
 
+    /// A send stops retrying after this many flush attempts and goes .failed —
+    /// resend resets the count.
+    static let sendAttemptCap = 5
+
     func flushOutbox() async {
         await flushReactions()
         guard let profile, isOnline, !outbox.isEmpty else { return }
@@ -526,21 +534,57 @@ final class AppModel {
                 to: item.recipientIDs, from: profile, senderID: senderID,
                 messageID: item.id
             )
-            if !result.succeeded {
-                var retry = item
-                retry.recipientIDs = result.failedRecipientIDs
-                retry.attempts += 1
-                retry.lastErrorDescription = result.lastError?.localizedDescription
+            if result.succeeded {
+                GridStore.shared.updateSentStatus(id: item.id, status: .sent)
+                continue
+            }
+            var retry = item
+            retry.recipientIDs = result.failedRecipientIDs
+            retry.attempts += 1
+            retry.lastErrorDescription = result.lastError?.localizedDescription
+            // Surface the cause — a silent queue is undebuggable (this is what
+            // let sends rot with the debug panel claiming "none").
+            if let error = result.lastError {
+                lastError = "Send: \(error.localizedDescription)"
+            }
+            // Give up on terminal errors or at the attempt cap; the sent tab shows
+            // "not sent yet" with a resend. Otherwise keep retrying, remembering
+            // exactly which recipients are still owed.
+            if result.isTerminal || retry.attempts >= Self.sendAttemptCap {
+                GridStore.shared.updateSentStatus(id: item.id, status: .failed,
+                                                  failedRecipientIDs: result.failedRecipientIDs)
+            } else {
                 remaining.append(retry)
-                // Surface the cause — a silent queue is undebuggable (this is what
-                // let sends rot with the debug panel claiming "none").
-                if let error = result.lastError {
-                    lastError = "Send: \(error.localizedDescription)"
-                }
+                GridStore.shared.updateSentStatus(id: item.id, status: .sending,
+                                                  failedRecipientIDs: result.failedRecipientIDs)
             }
         }
         outbox = remaining
         GridStore.shared.saveOutbox(outbox)
+    }
+
+    /// Resend from the sent tab: retarget exactly the recipients still owed, reset
+    /// the attempt budget, and flush now. Works whether the item is still queued
+    /// (retrying) or was dropped when it gave up (rebuilt from the sent echo, which
+    /// carries the full payload).
+    func resendMessage(id: String) {
+        guard let message = GridStore.shared.sentHistory().first(where: { $0.id == id }) else { return }
+        if let index = outbox.firstIndex(where: { $0.id == id }) {
+            outbox[index].attempts = 0
+            outbox[index].lastErrorDescription = nil
+        } else {
+            guard let profile else { return }
+            let targets = message.failedRecipientIDs.isEmpty
+                ? message.recipients.map(\.id)
+                : message.failedRecipientIDs
+            guard !targets.isEmpty else { return }
+            outbox.append(QueuedSend(id: id, kind: message.drawing.kind, grid: message.drawing.grid,
+                                     imageData: message.drawing.imageData, recipientIDs: targets,
+                                     senderName: profile.name, token: profile.token, createdAt: Date()))
+        }
+        GridStore.shared.saveOutbox(outbox)
+        GridStore.shared.updateSentStatus(id: id, status: .sending)
+        Task { await flushOutbox() }
     }
 
     // MARK: - Reactions

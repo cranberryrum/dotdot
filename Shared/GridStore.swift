@@ -117,6 +117,17 @@ struct GridStore {
         encode(items, forKey: Self.sentHistoryKey)
     }
 
+    /// Advance a sent message's delivery state (the sent tab is the honest record;
+    /// the composer's "sent!" flip is optimistic).
+    func updateSentStatus(id: String, status: SentMessage.SendStatus,
+                          failedRecipientIDs: [String] = []) {
+        var items = sentHistory()
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].status = status
+        items[index].failedRecipientIDs = failedRecipientIDs
+        encode(items, forKey: Self.sentHistoryKey)
+    }
+
     // MARK: - Reactions
 
     /// Record MY reaction to a received dotdot (nil = un-react) everywhere that

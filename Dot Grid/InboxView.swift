@@ -25,6 +25,8 @@ private struct InboxEntry: Identifiable {
     let token: IdentityToken   // sender (received) or first recipient (sent)
     let title: String          // "alice" (received) · "to alice +2" (sent)
     var reactions: [ReactionInfo] = []   // sent feed: who reacted with what
+    var sendStatus: SentMessage.SendStatus?   // sent feed: honest delivery state
+    var messageID: String?                    // sent feed: resend target
 }
 
 /// The tray's quick picks; the "+" opens the full grid.
@@ -235,7 +237,7 @@ struct InboxView: View {
                     title = "to \(m.recipients[0].name) +\(m.recipients.count - 1)"
                 }
                 return InboxEntry(id: "s-\(m.id)", drawing: m.drawing, token: token, title: title,
-                                  reactions: m.reactions)
+                                  reactions: m.reactions, sendStatus: m.status, messageID: m.id)
             }
         }
     }
@@ -279,7 +281,13 @@ struct InboxView: View {
                                     received = GridStore.shared.receivedHistory()
                                     if isSetting && !reduceMotion { spawnBalloons(emoji, at: point) }
                                 }
-                                : nil
+                                : nil,
+                            onResend: entry.messageID.map { id in
+                                {
+                                    appModel.resendMessage(id: id)
+                                    sent = GridStore.shared.sentHistory()
+                                }
+                            }
                         )
                     }
                 }
@@ -417,6 +425,8 @@ private struct FeedCard: View {
     /// React handler (emoji + tap point in "inboxSpace") — present only on the
     /// received feed; shows the emoji tray.
     var onReact: ((String, CGPoint) -> Void)? = nil
+    /// Resend handler — sent feed only; shown when the send gave up.
+    var onResend: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -449,8 +459,51 @@ private struct FeedCard: View {
                 reactionChips
                     .padding(.horizontal, 2)
             }
+            statusLine
+                .padding(.horizontal, 4)
         }
         .onTapIfPresent(onTap)
+    }
+
+    /// The honest delivery state under a sent card. Quiet when all is well;
+    /// a resend appears only when the send gave up. Local-only shows nothing.
+    @ViewBuilder
+    private var statusLine: some View {
+        switch entry.sendStatus {
+        case .sending:
+            Text("sending…")
+                .font(DotFont.mono(11, bold: true))
+                .foregroundStyle(.white.opacity(0.45))
+        case .sent:
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 9, weight: .bold))
+                Text("sent")
+                    .font(DotFont.mono(11, bold: true))
+            }
+            .foregroundStyle(.white.opacity(0.35))
+        case .failed:
+            HStack(spacing: 8) {
+                Text("not sent yet")
+                    .font(DotFont.mono(11, bold: true))
+                    .foregroundStyle(Theme.red.opacity(0.9))
+                if let onResend {
+                    Button(action: onResend) {
+                        Text("resend")
+                            .font(DotFont.ui(12, weight: .bold))
+                            .foregroundStyle(Theme.ink)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule(style: .continuous).fill(Theme.cream))
+                    }
+                    .buttonStyle(SquishyButtonStyle())
+                    .accessibilityLabel("resend")
+                }
+                Spacer(minLength: 0)
+            }
+        case .localOnly, nil:
+            EmptyView()
+        }
     }
 
     /// Sent feed: who reacted with what — "❤️ aditya" chips.
