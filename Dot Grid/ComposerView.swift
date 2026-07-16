@@ -169,6 +169,23 @@ struct ComposerView: View {
                         .accessibilityElement()
                         .accessibilityLabel("settings")
                         .accessibilityAddTraits(.isButton)
+                } else {
+                    // No profile yet (signed out / simulator): an empty slot that
+                    // nudges toward iCloud on tap — and still opens the debug
+                    // panel on long-press, so a profile-less build can be tested.
+                    Image(systemName: "person.crop.circle.dashed")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(Palette.boardBackground))
+                        .onTapGesture {
+                            appModel.showToast("sign into icloud to create your profile",
+                                               icon: "icloud")
+                        }
+                        .onLongPressGesture { activeSheet = .debug }
+                        .accessibilityElement()
+                        .accessibilityLabel("profile")
+                        .accessibilityAddTraits(.isButton)
                 }
             }
         }
