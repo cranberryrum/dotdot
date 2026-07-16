@@ -219,13 +219,38 @@ struct GridStore {
     func loadOutbox() -> [QueuedSend] { decode([QueuedSend].self, forKey: Self.outboxKey) ?? [] }
     func saveOutbox(_ items: [QueuedSend]) { encode(items, forKey: Self.outboxKey) }
 
+    // MARK: - Debug widget override (visual QA from the debug panel)
+
+    private static let debugWidgetOverrideKey = "debug.widgetOverride"
+
+    /// Wrapper so the panel can preview the EMPTY state too: key absent = no
+    /// override (live data); present with `drawing == nil` = preview empty.
+    struct WidgetDebugOverride: Codable {
+        var drawing: DisplayDrawing?
+    }
+
+    /// When set (from the debug panel), widget providers render this instead of
+    /// live data. The real slots are untouched, so clearing the override
+    /// restores the live widget instantly.
+    func widgetDebugOverride() -> WidgetDebugOverride? {
+        decode(WidgetDebugOverride.self, forKey: Self.debugWidgetOverrideKey)
+    }
+
+    func setWidgetDebugOverride(_ override: WidgetDebugOverride?) {
+        guard let override else {
+            defaults?.removeObject(forKey: Self.debugWidgetOverrideKey)
+            return
+        }
+        encode(override, forKey: Self.debugWidgetOverrideKey)
+    }
+
     // MARK: - Reset (iCloud account switch starts fresh)
 
     func clearSharedState() {
         guard let defaults else { return }
         for key in [Self.localEchoKey, Self.latestReceivedKey, Self.rosterKey, Self.profileKey,
                     Self.outboxKey, Self.receivedHistoryKey, Self.sentHistoryKey, Self.latestReceivedAtKey,
-                    Self.lastDrawingFetchKey] {
+                    Self.lastDrawingFetchKey, Self.debugWidgetOverrideKey] {
             defaults.removeObject(forKey: key)
         }
         for friend in roster() {

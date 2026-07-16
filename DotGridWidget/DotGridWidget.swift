@@ -133,13 +133,25 @@ struct LatestProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (DotGridEntry) -> Void) {
+        if let override = GridStore.shared.widgetDebugOverride() {
+            completion(DotGridEntry(date: .now, drawing: override.drawing))
+            return
+        }
         let stored = GridStore.shared.latestDisplayDrawing()
         let drawing = (context.isPreview && stored == nil) ? DisplayDrawing.placeholder(at: .now) : stored
         completion(DotGridEntry(date: .now, drawing: drawing))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<DotGridEntry>) -> Void) {
-        let entry = DotGridEntry(date: .now, drawing: GridStore.shared.latestDisplayDrawing())
+        // The debug panel's widget-preview override wins over live data — even
+        // when it holds no drawing (that's the empty-state preview).
+        let drawing: DisplayDrawing?
+        if let override = GridStore.shared.widgetDebugOverride() {
+            drawing = override.drawing
+        } else {
+            drawing = GridStore.shared.latestDisplayDrawing()
+        }
+        let entry = DotGridEntry(date: .now, drawing: drawing)
         // The app reloads timelines on send/receive; the widget never fetches. But a
         // reload requested from the BACKGROUND (push path) can be throttled/dropped by
         // iOS — so ask to be re-run periodically as a self-healing safety net: each run
@@ -213,6 +225,8 @@ struct FriendProvider: AppIntentTimelineProvider {
     }
 
     private func drawing(for configuration: SelectFriendIntent) -> DisplayDrawing? {
+        // Debug override first — same rule as LatestProvider.
+        if let override = GridStore.shared.widgetDebugOverride() { return override.drawing }
         guard let id = configuration.friend?.id else { return GridStore.shared.latestDisplayDrawing() }
         return GridStore.shared.displayDrawing(forFriend: id)
     }
