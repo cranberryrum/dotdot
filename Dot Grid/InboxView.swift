@@ -54,6 +54,14 @@ struct InboxView: View {
     @State private var scrollTarget: String?   // entry id a notification tap wants visible
     @Namespace private var tabPill
 
+    init() {
+#if DEBUG
+        if AppStoreCapture.scene == .reactions {
+            _tab = State(initialValue: .sent)
+        }
+#endif
+    }
+
     var body: some View {
         ZStack {
             Palette.screenBackground.ignoresSafeArea()
@@ -62,7 +70,7 @@ struct InboxView: View {
                 tabBar
                     .padding(.horizontal, 20)
                     .padding(.bottom, 12)
-                if appModel.notifications.shouldShowFeedNudge {
+                if shouldShowNotificationNudge {
                     notifNudge
                         .padding(.horizontal, 20)
                         .padding(.bottom, 12)
@@ -85,6 +93,13 @@ struct InboxView: View {
         .sheet(isPresented: $showNotifPriming) { NotificationPrimingSheet() }
         .onAppear(perform: reload)
         .task { await appModel.notifications.refresh() }   // live status, read fresh
+    }
+
+    private var shouldShowNotificationNudge: Bool {
+#if DEBUG
+        if AppStoreCapture.scene == .reactions { return false }
+#endif
+        return appModel.notifications.shouldShowFeedNudge
     }
 
     // MARK: Notification nudge (calm, dismissible; shows only when undecided / denied)
@@ -428,6 +443,11 @@ private struct FeedCard: View {
     /// Resend handler — sent feed only; shown when the send gave up.
     var onResend: (() -> Void)? = nil
 
+    /// The save chip's lifecycle. Denied sticks (tap routes to Settings);
+    /// saved/failed flash their icon, then settle back to idle.
+    private enum SaveState { case idle, saving, saved, denied, failed }
+    @State private var saveState: SaveState = .idle
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ZStack(alignment: .topTrailing) {
@@ -440,6 +460,9 @@ private struct FeedCard: View {
                     )
                 TokenBadge(token: entry.token, size: 34)
                     .padding(14)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                saveChip.padding(14)
             }
             HStack(spacing: 8) {
                 Text(entry.title)
@@ -463,6 +486,69 @@ private struct FeedCard: View {
                 .padding(.horizontal, 4)
         }
         .onTapIfPresent(onTap)
+    }
+
+    /// Save-to-gallery, tucked on the artwork like the widget's reaction sticker.
+    /// Feedback stays on the chip itself (icon flips) — toasts host behind sheets,
+    /// so they can't be used here.
+    private var saveChip: some View {
+        Button {
+            switch saveState {
+            case .idle, .failed:
+                saveState = .saving
+                Task {
+                    switch await DotdotExporter.save(entry.drawing) {
+                    case .saved:
+                        saveState = .saved
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        try? await Task.sleep(for: .seconds(1.6))
+                        if saveState == .saved { saveState = .idle }
+                    case .denied:
+                        saveState = .denied
+                    case .failed:
+                        saveState = .failed
+                        try? await Task.sleep(for: .seconds(1.6))
+                        if saveState == .failed { saveState = .idle }
+                    }
+                }
+            case .denied:
+                // The one state a retry can't fix from here.
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            case .saving, .saved:
+                break
+            }
+        } label: {
+            Image(systemName: saveIcon)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(.black.opacity(0.45)))
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(SquishyButtonStyle())
+        .animation(Motion.crisp(0.2), value: saveState)
+        .accessibilityLabel(saveAccessibilityLabel)
+    }
+
+    private var saveIcon: String {
+        switch saveState {
+        case .idle: "square.and.arrow.down"
+        case .saving: "ellipsis"
+        case .saved: "checkmark"
+        case .denied: "lock"
+        case .failed: "xmark"
+        }
+    }
+
+    private var saveAccessibilityLabel: String {
+        switch saveState {
+        case .idle, .saving: "save to photos"
+        case .saved: "saved"
+        case .denied: "allow photo access in settings"
+        case .failed: "couldn't save"
+        }
     }
 
     /// The honest delivery state under a sent card. Quiet when all is well;
