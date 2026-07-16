@@ -2,9 +2,9 @@
 //  DotGridWidget.swift
 //  DotGridWidgetExtension
 //
-//  Display-only systemLarge widgets. They ONLY read the App Group via GridStore —
-//  never the network. The app feeds them (local echo, or CloudKit pushes/fetches
-//  writing received drawings) and calls reloadAllTimelines.
+//  Display-only widgets (systemSmall + systemLarge). They ONLY read the App Group
+//  via GridStore — never the network. The app feeds them (local echo, or CloudKit
+//  pushes/fetches writing received drawings) and calls reloadAllTimelines.
 //
 
 import AppIntents
@@ -32,14 +32,22 @@ struct DotGridWidgetView: View {
     // reports the margins it *would* have used so we can re-apply them only where
     // we want them — the dots grid stays inset; the photo bleeds to the edges.
     @Environment(\.widgetContentMargins) private var margins
+    @Environment(\.widgetFamily) private var family
     let drawing: DisplayDrawing?
+
+    // systemSmall gets the same composition at ~46% the size, so the chrome
+    // (badges, gaps, type) scales down or it would swallow the artwork.
+    private var isSmall: Bool { family == .systemSmall }
+    private var badgeSize: CGFloat { isSmall ? 22 : 30 }
+    private var badgeInset: CGFloat { isSmall ? 8 : 12 }
+    private var dotSpacing: CGFloat { isSmall ? 2 : 5 }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             content
             if let drawing, !drawing.senderID.isEmpty {
-                TokenBadge(token: drawing.token, size: 30)
-                    .padding(12)
+                TokenBadge(token: drawing.token, size: badgeSize)
+                    .padding(badgeInset)
             }
             // The emoji you reacted with, stuck on the dotdot like a sticker.
             if let reaction = drawing?.myReaction {
@@ -47,18 +55,18 @@ struct DotGridWidgetView: View {
                     Spacer()
                     HStack {
                         Text(reaction)
-                            .font(.system(size: 17))
-                            .frame(width: 30, height: 30)
+                            .font(.system(size: isSmall ? 13 : 17))
+                            .frame(width: badgeSize, height: badgeSize)
                             .background(Circle().fill(.black.opacity(0.45)))
                         Spacer()
                     }
                 }
-                .padding(12)
+                .padding(badgeInset)
             }
             if drawing == nil {
                 Text("dots & photos from\nfriends show up here")
-                    .font(DotFont.mono(11, bold: true))
-                    .tracking(1)
+                    .font(DotFont.mono(isSmall ? 9 : 11, bold: true))
+                    .tracking(isSmall ? 0.5 : 1)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white.opacity(0.4))
             }
@@ -96,20 +104,22 @@ struct DotGridWidgetView: View {
                     photoPlaceholder.padding(margins)
                 }
             case .dots:
-                // Idle "throb" breath, which is widget-only.
-                GridBoardView(grid: drawing.grid ?? .empty, spacing: 5)
+                // Idle "throb" breath, which is widget-only. The board is square at
+                // any side count (8×8 or 12×12 — square cells, uniform gaps), so it
+                // fits both families; only the gap width scales with the widget.
+                GridBoardView(grid: drawing.grid ?? .empty, spacing: dotSpacing)
                     .throb()
                     .padding(margins)
             }
         } else {
-            GridBoardView(grid: .empty, spacing: 5)
+            GridBoardView(grid: .empty, spacing: dotSpacing)
                 .padding(margins)
         }
     }
 
     private var photoPlaceholder: some View {
         Image(systemName: "photo")
-            .font(.system(size: 36, weight: .semibold))
+            .font(.system(size: isSmall ? 24 : 36, weight: .semibold))
             .foregroundStyle(.white.opacity(0.4))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -145,7 +155,7 @@ struct DotGridWidget: Widget {
         }
         .configurationDisplayName("dotdot")
         .description("the latest drawing from a friend.")
-        .supportedFamilies([.systemLarge])
+        .supportedFamilies([.systemSmall, .systemLarge])
         .contentMarginsDisabled()   // let photos bleed to the widget edges
     }
 }
@@ -215,7 +225,7 @@ struct DotGridFriendWidget: Widget {
         }
         .configurationDisplayName("friend's dotdot")
         .description("pin one friend's latest drawing.")
-        .supportedFamilies([.systemLarge])
+        .supportedFamilies([.systemSmall, .systemLarge])
         .contentMarginsDisabled()   // let photos bleed to the widget edges
     }
 }

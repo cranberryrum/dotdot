@@ -336,7 +336,9 @@ final class SharingService {
     /// the underlying error (so it can finally be SEEN in the debug panel), and
     /// whether retrying later can help. Swallowing errors here is what let the
     /// outbox rot silently.
-    struct SendResult {
+    // nonisolated: plain data, consumed by the nonisolated retry policy
+    // (AppModel.flushOutcome) and by tests.
+    nonisolated struct SendResult {
         var failedRecipientIDs: [String] = []
         var lastError: Error?
         /// True when a retry can't fix it (bad record, quota, permissions) — the
