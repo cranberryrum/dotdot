@@ -10,6 +10,8 @@ Automatic signing will register these on the App ID the first time you add them:
 
 - **iCloud → CloudKit**, container `iCloud.com.kolteaditya.dotgrid`
 - **Push Notifications**
+- **Time Sensitive Notifications** (the app target; lets dotdot alerts bypass
+  Scheduled Summary/Focus when the user allows it)
 - **Background Modes → Remote notifications**
 - **App Groups** → `group.com.kolteaditya.dotgrid` (already present)
 
@@ -34,10 +36,12 @@ indexes by hand (CloudKit doesn't infer them). In the Dashboard → Schema → I
 | Drawing     | recipientID   | Queryable            |
 | Drawing     | senderID      | Queryable            |
 | Drawing     | sentAt        | Queryable + Sortable |
+| Drawing     | creationDate  | Queryable + Sortable |
 | Drawing     | recordName    | Queryable (default)  |
 | Reaction    | recipientID   | Queryable            |
 | Reaction    | reactorID     | Queryable            |
 | Reaction    | sentAt        | Queryable + Sortable |
+| Reaction    | modificationDate | Queryable + Sortable |
 | Reaction    | recordName    | Queryable (default)  |
 
 > `senderID` needs a Queryable index now too — "delete my data" queries drawings
@@ -53,7 +57,7 @@ Fields per type (auto-created on first write; types shown for reference):
 - **InviteCode** — `code` (String), `ownerID` (String), `expiresAt` (Date/Time),
   `used` (Int64), `usedBy` (String).
 - **Drawing** — `recipientID`, `senderID`, `senderName`, `tokenSymbol` (String),
-  `tokenColor` (Int64), `sentAt` (Date/Time), `kind` (String: "dots"|"photo"),
+  `tokenColor` (Int64), `sentAt` (Date/Time), `kind` (String: "dots"|"photo"|"doodle"),
   `gridData` (Bytes, ~1 KB JSON, dots only), `imageAsset` (Asset, photo only —
   an already-downscaled widget-safe JPEG), `messageID` (String — the sender's
   send UUID; the key a reaction points back at; no index needed).
@@ -67,7 +71,8 @@ Fields per type (auto-created on first write; types shown for reference):
 > **Photo mode:** a photo message sets `kind="photo"` and uploads the framed image
 > as a CKAsset in `imageAsset`. The image is downscaled + JPEG-compressed to
 > ~widget pixel size BEFORE upload, so the widget never loads full-res. No new
-> index is needed for the photo fields (queries still use recipientID + sentAt).
+> index is needed for the photo fields (queries use recipientID + creationDate;
+> sentAt remains indexed as a rolling-upgrade fallback).
 > No second widget kind — the single systemLarge widget renders dots or photo by
 > the stored `kind`.
 
@@ -110,3 +115,25 @@ button); the other person types it in under Add a friend.
   `RecipientPickerView` — the UI.
 - `Dot Grid/AppDelegate.swift` — remote-notification registration + push handling.
 - `DotGridWidget/DotGridWidget.swift` — default (latest) + per-friend widgets.
+
+### Delivery/reconciliation contract
+
+- Every send is written locally first and stays in a durable outbox until CloudKit
+  confirms it or returns a genuinely permanent record/configuration error. Retries
+  reuse one deterministic record ID per message and recipient, so a lost response
+  cannot create duplicate records or notifications.
+- A CloudKit query push's `recordID` is fetched directly first. The app then runs a
+  cursor-complete metadata reconciliation because CloudKit may coalesce pushes and
+  its public query indexes are eventually consistent.
+- Reconciliation uses CloudKit's server clock with a 24-hour overlap. Unknown IDs
+  enter a durable exact-fetch queue before assets are downloaded, so an asset/network
+  failure cannot be skipped permanently when the high-water mark advances.
+- The widget remains network-free. App and notification-extension ingestion write
+  the same App Group projection and reload both affected widget kinds; foreground
+  entry and a 30-minute timeline policy provide self-healing if iOS throttles a
+  background widget reload.
+
+CloudKit pushes and WidgetKit reloads are scheduled/coalesced by iOS, so no client-only
+architecture can promise a wall-clock delivery deadline while the receiving phone is
+offline, Focus/time-sensitive alerts are disabled, or the OS withholds background work.
+The design above makes those events recoverable rather than permanently missing.

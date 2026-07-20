@@ -62,6 +62,13 @@ struct DisplayDrawing: Codable, Equatable {
     var senderName: String
     var token: IdentityToken
     var sentAt: Date
+    /// CloudKit's server-authored creation time. Unlike `sentAt`, this doesn't
+    /// depend on the sender's device clock, so receive ordering and widget
+    /// freshness stay stable when friends' clocks disagree.
+    var serverCreatedAt: Date?
+    /// The exact CloudKit record that delivered this drawing. Push handling uses
+    /// it for direct, idempotent fetches; older cached drawings legitimately lack it.
+    var recordName: String?
     /// Stable cross-device ID (the sender's local send UUID, carried on the Drawing
     /// record) — what a reaction points at. nil on dotdots sent before reactions.
     var messageID: String?
@@ -70,7 +77,8 @@ struct DisplayDrawing: Codable, Equatable {
 
     init(kind: MessageKind, grid: Grid? = nil, imageData: Data? = nil,
          senderID: String, senderName: String, token: IdentityToken, sentAt: Date,
-         messageID: String? = nil, myReaction: String? = nil) {
+         messageID: String? = nil, myReaction: String? = nil,
+         serverCreatedAt: Date? = nil, recordName: String? = nil) {
         self.kind = kind
         self.grid = grid
         self.imageData = imageData
@@ -78,31 +86,44 @@ struct DisplayDrawing: Codable, Equatable {
         self.senderName = senderName
         self.token = token
         self.sentAt = sentAt
+        self.serverCreatedAt = serverCreatedAt
+        self.recordName = recordName
         self.messageID = messageID
         self.myReaction = myReaction
     }
 
+    /// The trustworthy ordering clock for received content, with a tolerant
+    /// fallback for local echoes and records cached by older app versions.
+    nonisolated var orderingDate: Date { serverCreatedAt ?? sentAt }
+
     static func dots(_ grid: Grid, senderID: String, senderName: String,
-                     token: IdentityToken, sentAt: Date, messageID: String? = nil) -> DisplayDrawing {
+                     token: IdentityToken, sentAt: Date, messageID: String? = nil,
+                     serverCreatedAt: Date? = nil, recordName: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .dots, grid: grid, senderID: senderID,
-                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID,
+                       serverCreatedAt: serverCreatedAt, recordName: recordName)
     }
 
     static func photo(_ imageData: Data, senderID: String, senderName: String,
-                      token: IdentityToken, sentAt: Date, messageID: String? = nil) -> DisplayDrawing {
+                      token: IdentityToken, sentAt: Date, messageID: String? = nil,
+                      serverCreatedAt: Date? = nil, recordName: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .photo, imageData: imageData, senderID: senderID,
-                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID,
+                       serverCreatedAt: serverCreatedAt, recordName: recordName)
     }
 
     static func doodle(_ imageData: Data, senderID: String, senderName: String,
-                       token: IdentityToken, sentAt: Date, messageID: String? = nil) -> DisplayDrawing {
+                       token: IdentityToken, sentAt: Date, messageID: String? = nil,
+                       serverCreatedAt: Date? = nil, recordName: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .doodle, imageData: imageData, senderID: senderID,
-                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                       senderName: senderName, token: token, sentAt: sentAt, messageID: messageID,
+                       serverCreatedAt: serverCreatedAt, recordName: recordName)
     }
 
     // Tolerant decode: older cached records had no `kind` and a required `grid`.
     enum CodingKeys: String, CodingKey {
-        case kind, grid, imageData, senderID, senderName, token, sentAt, messageID, myReaction
+        case kind, grid, imageData, senderID, senderName, token, sentAt,
+             serverCreatedAt, recordName, messageID, myReaction
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -113,6 +134,8 @@ struct DisplayDrawing: Codable, Equatable {
         senderName = (try? c.decode(String.self, forKey: .senderName)) ?? "Friend"
         token = (try? c.decode(IdentityToken.self, forKey: .token)) ?? .placeholder
         sentAt = (try? c.decode(Date.self, forKey: .sentAt)) ?? Date()
+        serverCreatedAt = try? c.decode(Date.self, forKey: .serverCreatedAt)
+        recordName = try? c.decode(String.self, forKey: .recordName)
         messageID = try? c.decode(String.self, forKey: .messageID)
         myReaction = try? c.decode(String.self, forKey: .myReaction)
     }
@@ -137,7 +160,7 @@ struct SentMessage: Codable, Equatable, Identifiable {
     enum SendStatus: String, Codable {
         case sending     // queued / retrying
         case sent        // every recipient's record reached CloudKit
-        case failed      // gave up (terminal error or attempt cap) — resendable
+        case failed      // permanent/configuration error — full payload remains resendable
         case localOnly   // no friends picked; nothing to deliver
     }
 

@@ -9,6 +9,14 @@
 
 import Foundation
 
+/// Extra keys the notification service extension preserves after replacing the
+/// CloudKit payload with a compact deep-link route. They let a cold notification
+/// tap fetch the exact record before presenting the inbox.
+enum NotificationDeliveryKey {
+    static let recordName = "cloudRecordName"
+    static let subscriptionID = "cloudSubscriptionID"
+}
+
 /// Where a notification tap lands. Never a generic home screen: a send push opens
 /// that drawing, a connected push opens that friend, a reaction echo opens the
 /// reacted-to drawing in sent.

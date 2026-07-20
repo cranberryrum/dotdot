@@ -54,14 +54,6 @@ struct InboxView: View {
     @State private var scrollTarget: String?   // entry id a notification tap wants visible
     @Namespace private var tabPill
 
-    init() {
-#if DEBUG
-        if AppStoreCapture.scene == .reactions {
-            _tab = State(initialValue: .sent)
-        }
-#endif
-    }
-
     var body: some View {
         ZStack {
             Palette.screenBackground.ignoresSafeArea()
@@ -92,13 +84,13 @@ struct InboxView: View {
         .presentationBackground(Palette.screenBackground)
         .sheet(isPresented: $showNotifPriming) { NotificationPrimingSheet() }
         .onAppear(perform: reload)
+        // CloudKit work may finish after this sheet has appeared. The App Group is
+        // the source of truth; deliveryRevision tells this snapshot to re-read it.
+        .onChange(of: appModel.deliveryRevision) { _, _ in reload() }
         .task { await appModel.notifications.refresh() }   // live status, read fresh
     }
 
     private var shouldShowNotificationNudge: Bool {
-#if DEBUG
-        if AppStoreCapture.scene == .reactions { return false }
-#endif
         return appModel.notifications.shouldShowFeedNudge
     }
 
@@ -175,8 +167,11 @@ struct InboxView: View {
                     drawing: drawing, token: drawing.token, title: drawing.senderName
                 )
                 withAnimation(Motion.pop) { peek = entry }
+                appModel.pendingRoute = nil
             }
-            appModel.pendingRoute = nil
+            // If the exact fetch is still in flight, keep the route. The next
+            // deliveryRevision reload will resolve it instead of opening an empty
+            // inbox and permanently throwing the notification target away.
         case .sentDrawing(let messageID):
             tab = .sent
             scrollTarget = "s-\(messageID)"
