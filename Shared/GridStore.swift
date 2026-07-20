@@ -106,6 +106,25 @@ struct GridStore {
         return cleaned
     }
 
+    /// The sender+time identity of a received dotdot — the pre-messageID key.
+    /// One implementation shared by the dedupe pass and the fetch layer's
+    /// already-have check, so their notions of "same drawing" can't drift.
+    nonisolated static func senderTimeKey(senderID: String, sentAt: Date) -> String {
+        "\(senderID)|\(sentAt.timeIntervalSinceReferenceDate)"
+    }
+
+    /// Identity sets for everything already received — lets the fetch layer skip
+    /// records it has BEFORE downloading their assets.
+    func receivedIdentities() -> (messageIDs: Set<String>, senderTimes: Set<String>) {
+        var messageIDs = Set<String>()
+        var senderTimes = Set<String>()
+        for drawing in receivedHistory() {
+            if let id = drawing.messageID { messageIDs.insert(id) }
+            senderTimes.insert(Self.senderTimeKey(senderID: drawing.senderID, sentAt: drawing.sentAt))
+        }
+        return (messageIDs, senderTimes)
+    }
+
     /// Collapse twins — same messageID, or same sender + exact sentAt (the
     /// pre-messageID identity, which also catches a refetched old drawing whose
     /// stored copy predates messageID). Keeps the first (newest) copy, but never
@@ -115,7 +134,7 @@ struct GridStore {
         var indexByMessageID: [String: Int] = [:]
         var indexBySenderTime: [String: Int] = [:]
         for item in items {
-            let timeKey = "\(item.senderID)|\(item.sentAt.timeIntervalSinceReferenceDate)"
+            let timeKey = senderTimeKey(senderID: item.senderID, sentAt: item.sentAt)
             let twin = item.messageID.flatMap { indexByMessageID[$0] } ?? indexBySenderTime[timeKey]
             if let twin {
                 if kept[twin].myReaction == nil { kept[twin].myReaction = item.myReaction }
@@ -126,6 +145,13 @@ struct GridStore {
             kept.append(item)
         }
         return kept
+    }
+
+    /// Where a drawing belongs in the newest-first feed. A record re-fetched by
+    /// the lookback window after falling out of the capped history lands at its
+    /// true position (or straight off the trimmed end) — never at the top.
+    nonisolated static func insertionIndex(for drawing: DisplayDrawing, in items: [DisplayDrawing]) -> Int {
+        items.firstIndex { $0.sentAt <= drawing.sentAt } ?? items.endIndex
     }
 
     private func prependReceivedHistory(_ drawing: DisplayDrawing) {
@@ -140,7 +166,7 @@ struct GridStore {
             return existing.senderID == drawing.senderID && existing.sentAt == drawing.sentAt
         }
         guard !duplicate else { return }
-        items.insert(drawing, at: 0)
+        items.insert(drawing, at: Self.insertionIndex(for: drawing, in: items))
         if items.count > Self.historyLimit { items = Array(items.prefix(Self.historyLimit)) }
         encode(items, forKey: Self.receivedHistoryKey)
     }

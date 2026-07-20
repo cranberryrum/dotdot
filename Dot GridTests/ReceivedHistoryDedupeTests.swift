@@ -55,4 +55,29 @@ struct ReceivedHistoryDedupeTests {
         #expect(cleaned.count == 1)
         #expect(cleaned[0].myReaction == "❤️")
     }
+
+    // MARK: Ordered insertion (lookback refetches must not jump the queue)
+
+    @Test func lateArrivalInsertsAtItsTruePosition() {
+        // Feed is newest-first; a drawing older than the top but newer than the
+        // bottom belongs in the middle.
+        let feed = [drawing(at: 3000), drawing(at: 1000)]
+        #expect(GridStore.insertionIndex(for: drawing(at: 2000), in: feed) == 1)
+    }
+
+    @Test func newestInsertsAtTheTopAndOldestAtTheEnd() {
+        let feed = [drawing(at: 3000), drawing(at: 1000)]
+        #expect(GridStore.insertionIndex(for: drawing(at: 4000), in: feed) == 0)
+        #expect(GridStore.insertionIndex(for: drawing(at: 500), in: feed) == 2)
+    }
+
+    @Test func senderTimeKeyMatchesAcrossConstructions() {
+        // The fetch layer's already-have check and the dedupe pass must agree on
+        // identity for the same (sender, sentAt) pair.
+        let at = Date(timeIntervalSinceReferenceDate: 700_000_000.123456)
+        #expect(GridStore.senderTimeKey(senderID: "f1", sentAt: at)
+             == GridStore.senderTimeKey(senderID: "f1", sentAt: Date(timeIntervalSinceReferenceDate: 700_000_000.123456)))
+        #expect(GridStore.senderTimeKey(senderID: "f1", sentAt: at)
+             != GridStore.senderTimeKey(senderID: "f2", sentAt: at))
+    }
 }

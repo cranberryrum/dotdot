@@ -52,12 +52,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         // Only act on CloudKit notifications.
-        guard CKNotification(fromRemoteNotificationDictionary: userInfo) != nil else {
+        guard let note = CKNotification(fromRemoteNotificationDictionary: userInfo) else {
             completionHandler(.noData)
             return
         }
         Task {
-            let fetched = await AppModel.shared.handlePush()
+            // The subscription id tells handlePush what the push is for, so a
+            // drawing push doesn't burn its background budget refreshing friends.
+            let fetched = await AppModel.shared.handlePush(subscriptionID: note.subscriptionID)
             // Report honestly — iOS tracks this to decide how eagerly to keep
             // waking us for future silent pushes.
             completionHandler(fetched ? .newData : .noData)

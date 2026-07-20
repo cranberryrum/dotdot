@@ -244,13 +244,20 @@ final class SharingService {
             return members.first { $0 != myParticipantID && $0 != myID }
         }
 
+        // One batched fetch for every friend's profile (this used to be one
+        // round-trip PER friend, serially — the slowest part of every refresh,
+        // and it runs on each foreground and push).
+        let friendIDs = Set(otherIDs)
+        let profileRecordIDs = Array(Set(friendIDs.map { CKRecord.ID(recordName: profileUserID(from: $0)) }))
+        guard !profileRecordIDs.isEmpty else { return [] }
+        let profileResults = try await db.records(for: profileRecordIDs)
+
         var friends: [FriendInfo] = []
-        for id in Set(otherIDs) {
-            let profileID = profileUserID(from: id)
-            if let record = try? await db.record(for: CKRecord.ID(recordName: profileID)),
-               let profile = profile(from: record) {
-                friends.append(FriendInfo(id: id, name: profile.name, token: profile.token))
-            }
+        for id in friendIDs {
+            let recordID = CKRecord.ID(recordName: profileUserID(from: id))
+            guard let record = try? profileResults[recordID]?.get(),
+                  let profile = profile(from: record) else { continue }
+            friends.append(FriendInfo(id: id, name: profile.name, token: profile.token))
         }
         return friends.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -464,62 +471,107 @@ final class SharingService {
 
     // MARK: - Receiving
 
-    /// Fetch drawings addressed to me since the last fetch, store each into the
-    /// App Group (per sender + latest), and advance the high-water mark. Returns
-    /// the fetched drawings so callers can surface notifications for them.
-    func fetchIncoming(recipientIDs: [String]) async throws -> [DisplayDrawing] {
-        let since = GridStore.shared.lastDrawingFetch ?? .distantPast
+    /// How far behind the high-water mark every fetch re-scans. The mark fences
+    /// on the SENDER's clock (sentAt), and the public database's query index is
+    /// eventually consistent — a strict fence therefore misses PERMANENTLY:
+    /// a friend whose clock runs fast pushes the mark into the future and fences
+    /// out everyone else's on-time dotdots; a record the index hadn't surfaced
+    /// when a sibling advanced the mark; a photo whose one asset download
+    /// hiccuped. The overlap re-covers all of it for a day, and already-stored
+    /// records are skipped by identity BEFORE their asset would re-download, so
+    /// a re-scan costs metadata rows, not bandwidth.
+    static let incomingLookback: TimeInterval = 24 * 60 * 60
 
-        var recordsByID: [CKRecord.ID: CKRecord] = [:]
+    /// Phase-1 keys: enough to identify a record and place the mark. The grid
+    /// blob and the image asset only transfer for records we don't have.
+    private static let drawingMetadataKeys: [CKRecord.FieldKey] = ["senderID", "sentAt", "messageID"]
+
+    /// Fetch drawings addressed to me around the last fetch, store the new ones
+    /// into the App Group (per sender + latest), and advance the high-water mark.
+    /// Returns only the NEW drawings so callers notify/reload just for those.
+    func fetchIncoming(recipientIDs: [String]) async throws -> [DisplayDrawing] {
+        let mark = GridStore.shared.lastDrawingFetch ?? .distantPast
+        let since = mark == .distantPast ? mark : mark.addingTimeInterval(-Self.incomingLookback)
+
+        // Phase 1: cursor-complete metadata sweep (no assets, no grid blobs).
+        var metadataByID: [CKRecord.ID: CKRecord] = [:]
         for id in Set(recipientIDs) {
             let predicate = NSPredicate(format: "recipientID == %@ AND sentAt > %@", id, since as NSDate)
             let query = CKQuery(recordType: RT.drawing, predicate: predicate)
             query.sortDescriptors = [NSSortDescriptor(key: "sentAt", ascending: true)]
-            let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
-            for record in results.compactMap({ try? $0.1.get() }) {
-                recordsByID[record.recordID] = record
+            var (results, cursor) = try await db.records(
+                matching: query, desiredKeys: Self.drawingMetadataKeys,
+                resultsLimit: CKQueryOperation.maximumResults)
+            while true {
+                for record in results.compactMap({ try? $0.1.get() }) {
+                    metadataByID[record.recordID] = record
+                }
+                guard let next = cursor else { break }
+                (results, cursor) = try await db.records(
+                    continuingMatchFrom: next, desiredKeys: Self.drawingMetadataKeys,
+                    resultsLimit: CKQueryOperation.maximumResults)
             }
         }
 
-        var newest = since
-        var fetched: [DisplayDrawing] = []
-        let records = recordsByID.values.sorted {
-            (($0["sentAt"] as? Date) ?? .distantPast) < (($1["sentAt"] as? Date) ?? .distantPast)
-        }
-        for record in records {
-            let sentAt = (record["sentAt"] as? Date) ?? Date()
-            let senderID = record["senderID"] as? String ?? ""
-            let senderName = record["senderName"] as? String ?? "Friend"
-            let token = IdentityToken(
-                symbol: record["tokenSymbol"] as? String ?? "✦",
-                colorIndex: record["tokenColor"] as? Int ?? 0
-            )
-            let kind = MessageKind(rawValue: record["kind"] as? String ?? "dots") ?? .dots
-            let messageID = record["messageID"] as? String
-
-            let drawing: DisplayDrawing
-            switch kind {
-            case .photo, .doodle:
-                // The asset is already a downscaled, widget-safe JPEG (the sender
-                // shrank it before upload). CloudKit downloads it to a temp file.
-                guard let asset = record["imageAsset"] as? CKAsset,
-                      let url = asset.fileURL,
-                      let data = try? Data(contentsOf: url)
-                else { continue }
-                drawing = kind == .doodle
-                    ? .doodle(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
-                    : .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
-            case .dots:
-                guard let data = record["gridData"] as? Data,
-                      let grid = try? JSONDecoder().decode(Grid.self, from: data)
-                else { continue }
-                drawing = .dots(grid, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
-            }
-            GridStore.shared.saveReceived(drawing)
+        // Every record seen pins the mark; only unknown ones download in full.
+        let existing = GridStore.shared.receivedIdentities()
+        var newest = mark
+        var newRecordIDs: [CKRecord.ID] = []
+        for record in metadataByID.values {
+            let sentAt = (record["sentAt"] as? Date) ?? .distantPast
             newest = max(newest, sentAt)
-            fetched.append(drawing)
+            let senderID = record["senderID"] as? String ?? ""
+            let knownByMessageID = (record["messageID"] as? String).map(existing.messageIDs.contains) ?? false
+            let knownBySenderTime = existing.senderTimes.contains(
+                GridStore.senderTimeKey(senderID: senderID, sentAt: sentAt))
+            if !knownByMessageID && !knownBySenderTime { newRecordIDs.append(record.recordID) }
         }
-        if !fetched.isEmpty { GridStore.shared.lastDrawingFetch = newest }
+
+        // Phase 2: full records for the new ones only. Fetch-by-ID is strongly
+        // consistent, so a record the query index surfaced late still lands whole.
+        var fetched: [DisplayDrawing] = []
+        if !newRecordIDs.isEmpty {
+            let full = try await db.records(for: newRecordIDs)
+            let records = newRecordIDs
+                .compactMap { try? full[$0]?.get() }
+                .sorted { (($0["sentAt"] as? Date) ?? .distantPast) < (($1["sentAt"] as? Date) ?? .distantPast) }
+            for record in records {
+                let sentAt = (record["sentAt"] as? Date) ?? Date()
+                let senderID = record["senderID"] as? String ?? ""
+                let senderName = record["senderName"] as? String ?? "Friend"
+                let token = IdentityToken(
+                    symbol: record["tokenSymbol"] as? String ?? "✦",
+                    colorIndex: record["tokenColor"] as? Int ?? 0
+                )
+                let kind = MessageKind(rawValue: record["kind"] as? String ?? "dots") ?? .dots
+                let messageID = record["messageID"] as? String
+
+                let drawing: DisplayDrawing
+                switch kind {
+                case .photo, .doodle:
+                    // The asset is already a downscaled, widget-safe JPEG (the sender
+                    // shrank it before upload). CloudKit downloads it to a temp file.
+                    // A failed download is NOT a permanent miss anymore: the record
+                    // stays absent from the store, so the lookback re-tries it on
+                    // every pull for a day.
+                    guard let asset = record["imageAsset"] as? CKAsset,
+                          let url = asset.fileURL,
+                          let data = try? Data(contentsOf: url)
+                    else { continue }
+                    drawing = kind == .doodle
+                        ? .doodle(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                        : .photo(data, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                case .dots:
+                    guard let data = record["gridData"] as? Data,
+                          let grid = try? JSONDecoder().decode(Grid.self, from: data)
+                    else { continue }
+                    drawing = .dots(grid, senderID: senderID, senderName: senderName, token: token, sentAt: sentAt, messageID: messageID)
+                }
+                GridStore.shared.saveReceived(drawing)
+                fetched.append(drawing)
+            }
+        }
+        if newest > mark { GridStore.shared.lastDrawingFetch = newest }
         return fetched
     }
 
@@ -565,25 +617,34 @@ final class SharingService {
         let messageID: String?
     }
 
-    /// Fetch reactions to dotdots I sent since the last fetch and attach them to the
-    /// sent feed. Mirrors `fetchIncoming` (high-water mark on the reaction's save
-    /// time). Returns the fetched reactions so callers can surface notifications.
+    /// Fetch reactions to dotdots I sent around the last fetch and attach them to
+    /// the sent feed. Same lookback discipline as `fetchIncoming` — the mark rides
+    /// the REACTOR's clock, so a strict fence has the same permanent-miss holes.
+    /// Re-applying a reaction is an idempotent per-person upsert, so the overlap
+    /// costs nothing. Returns the fetched reactions for notification bookkeeping.
     func fetchReactions(recipientIDs: [String]) async throws -> [FetchedReaction] {
         let defaults = UserDefaults.standard
-        let since = (defaults.object(forKey: lastReactionFetchKey) as? Date) ?? .distantPast
+        let mark = (defaults.object(forKey: lastReactionFetchKey) as? Date) ?? .distantPast
+        let since = mark == .distantPast ? mark : mark.addingTimeInterval(-Self.incomingLookback)
 
         var recordsByID: [CKRecord.ID: CKRecord] = [:]
         for id in Set(recipientIDs) {
             let predicate = NSPredicate(format: "recipientID == %@ AND sentAt > %@", id, since as NSDate)
             let query = CKQuery(recordType: RT.reaction, predicate: predicate)
             query.sortDescriptors = [NSSortDescriptor(key: "sentAt", ascending: true)]
-            let (results, _) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
-            for record in results.compactMap({ try? $0.1.get() }) {
-                recordsByID[record.recordID] = record
+            var (results, cursor) = try await db.records(
+                matching: query, resultsLimit: CKQueryOperation.maximumResults)
+            while true {
+                for record in results.compactMap({ try? $0.1.get() }) {
+                    recordsByID[record.recordID] = record
+                }
+                guard let next = cursor else { break }
+                (results, cursor) = try await db.records(
+                    continuingMatchFrom: next, resultsLimit: CKQueryOperation.maximumResults)
             }
         }
 
-        var newest = since
+        var newest = mark
         var fetched: [FetchedReaction] = []
         for record in recordsByID.values {
             guard let emoji = record["emoji"] as? String,
@@ -604,7 +665,7 @@ final class SharingService {
             newest = max(newest, at)
             fetched.append(FetchedReaction(info: reaction, messageID: messageID))
         }
-        if !fetched.isEmpty { defaults.set(newest, forKey: lastReactionFetchKey) }
+        if newest > mark { defaults.set(newest, forKey: lastReactionFetchKey) }
         return fetched
     }
 
@@ -620,8 +681,12 @@ final class SharingService {
     /// content-available so a live app wakes to fetch. The sender never receives
     /// their own push: the predicates are all `recipientID == me`, and a sender's
     /// records carry the FRIEND's id there.
+    /// Returns whether every subscription save went through — the caller caches
+    /// the ensured shape only on success, so a failed ensure retries next time.
+    @discardableResult
     func ensureSubscription(userID: String, participantID: String,
-                            drawingAlertsVisible: Bool, reactionAlertsVisible: Bool) async {
+                            drawingAlertsVisible: Bool, reactionAlertsVisible: Bool) async -> Bool {
+        var allSaved = true
         for id in Set([userID, participantID]) {
             let component = subscriptionIDComponent(id)
 
@@ -659,11 +724,21 @@ final class SharingService {
                 : silentInfo()
 
             // Save the current generation and retire the v1 silent ones in one op.
-            _ = try? await db.modifySubscriptions(
-                saving: [drawings, friendships, reactions],
-                deleting: ["drawings-to-\(component)", "reactions-to-\(component)"]
-            )
+            // Delete failures don't count (an already-gone v1 id "fails" forever);
+            // save failures do — the caller must not cache a shape that isn't live.
+            do {
+                let (saveResults, _) = try await db.modifySubscriptions(
+                    saving: [drawings, friendships, reactions],
+                    deleting: ["drawings-to-\(component)", "reactions-to-\(component)"]
+                )
+                for result in saveResults.values {
+                    if case .failure = result { allSaved = false }
+                }
+            } catch {
+                allSaved = false
+            }
         }
+        return allSaved
     }
 
     private func silentInfo() -> CKSubscription.NotificationInfo {

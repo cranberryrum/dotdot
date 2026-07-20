@@ -146,15 +146,26 @@ final class AppModel {
         Task { await bootstrap() }
     }
 
+    private static let subscriptionShapeKey = "pushSubscriptionShape"
+
     /// (Re)assert the push subscriptions with the current per-type toggle shape:
     /// visible + mutable when the toggle is on, silent (data-only) when off.
+    /// Skipped when the last SUCCESSFUL ensure had this exact shape — this runs
+    /// on every foreground, and re-saving six identical subscriptions each time
+    /// was two wasted round-trips ahead of the actual fetch. Bump the "v2" tag
+    /// when the subscription shape changes so every install re-ensures once.
     private func refreshPushSubscriptions(userID: String) async {
-        await service.ensureSubscription(
+        let shape = "v2|\(userID)|\(participantID(for: userID))"
+            + "|d:\(notifications.drawingAlerts)|r:\(notifications.reactionAlerts)"
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: Self.subscriptionShapeKey) != shape else { return }
+        let saved = await service.ensureSubscription(
             userID: userID,
             participantID: participantID(for: userID),
             drawingAlertsVisible: notifications.drawingAlerts,
             reactionAlertsVisible: notifications.reactionAlerts
         )
+        if saved { defaults.set(shape, forKey: Self.subscriptionShapeKey) }
     }
 
     /// Full sync: account check, account-switch handling, identity, friends,
@@ -181,6 +192,7 @@ final class AppModel {
             UserDefaults.standard.removeObject(forKey: "lastReactionFetch")
             UserDefaults.standard.removeObject(forKey: Self.reactionOutboxKey)
             UserDefaults.standard.removeObject(forKey: Self.inboxSeenKey)
+            UserDefaults.standard.removeObject(forKey: Self.subscriptionShapeKey)
             inboxHasUnread = false
             clearInviteCode()
             WidgetCenter.shared.reloadAllTimelines()
@@ -244,19 +256,26 @@ final class AppModel {
     /// where `account` hasn't been resolved yet. Returns whether anything new was
     /// fetched, so the push completion can report .newData/.noData honestly (iOS
     /// uses that record to decide how eagerly to keep waking us).
+    ///
+    /// Ordered by what the push is FOR: the drawing lands and the widget reloads
+    /// before anything else spends the ~30s background budget. The friends
+    /// refresh (a whole query + profile fetch) only runs for friendship pushes —
+    /// a drawing needs no roster; its sender's name and token ride the record.
     @discardableResult
-    func handlePush() async -> Bool {
+    func handlePush(subscriptionID: String? = nil) async -> Bool {
         if case .available = account {} else { account = await service.accountState() }
         guard case let .available(userID) = account else { return false }
-        let newFriends = await refreshFriends()   // a push may mean a new friendship
         let drawings = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
-        let reactions = (try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
         refreshInboxUnread()
         if !drawings.isEmpty {
             WidgetCenter.shared.reloadAllTimelines()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
             notifications.noteReceivedFromFriend()          // the one allowed re-prime
         }
+        let reactions = (try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
+        // nil subscriptionID = origin unknown → do the full sweep.
+        let isFriendshipPush = subscriptionID?.hasPrefix("friendships-of-") ?? true
+        let newFriends = isFriendshipPush ? await refreshFriends() : []
         // Drawing/reaction banners are SERVER pushes now (rewritten by the service
         // extension); locally we keep the connected banner + first-sender records.
         await PushNotifier.notifyNewFriends(newFriends)
@@ -298,7 +317,10 @@ final class AppModel {
 
         GridStore.shared.clearSharedState()
         let defaults = UserDefaults.standard
-        for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients", "dotdotDeviceID", Self.inboxSeenKey] {
+        // subscriptionShapeKey too: the server-side subscriptions were just
+        // deleted, so the "already ensured" cache would leave this device deaf.
+        for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients",
+                    "dotdotDeviceID", Self.inboxSeenKey, Self.subscriptionShapeKey] {
             defaults.removeObject(forKey: key)
         }
         clearInviteCode()
