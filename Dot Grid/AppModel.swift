@@ -8,6 +8,7 @@
 //
 
 import BackgroundTasks
+import CloudKit
 import Foundation
 import Network
 import SwiftUI
@@ -46,6 +47,11 @@ final class AppModel {
     /// Bumped on a warm app-open or a live arrival while unread, so the wordmark can
     /// replay its shimmer for that event (the cold-launch case is driven by unread).
     private(set) var inboxShimmerNonce = 0
+
+    /// Monotonic in-process signal that an App Group projection changed. Views
+    /// keep their lightweight local arrays, but refresh them whenever delivery,
+    /// reaction, or send-status work finishes after the sheet has already opened.
+    private(set) var deliveryRevision = 0
 
     /// Where a tapped notification wants to land (a specific drawing or friend).
     /// ComposerView opens the right sheet; the sheet consumes the detail and
@@ -147,25 +153,34 @@ final class AppModel {
     }
 
     private static let subscriptionShapeKey = "pushSubscriptionShape"
+    private static let subscriptionVerifiedAtKey = "pushSubscriptionVerifiedAt"
+    private static let subscriptionVerificationTTL: TimeInterval = 24 * 60 * 60
 
     /// (Re)assert the push subscriptions with the current per-type toggle shape:
     /// visible + mutable when the toggle is on, silent (data-only) when off.
-    /// Skipped when the last SUCCESSFUL ensure had this exact shape — this runs
-    /// on every foreground, and re-saving six identical subscriptions each time
-    /// was two wasted round-trips ahead of the actual fetch. Bump the "v2" tag
-    /// when the subscription shape changes so every install re-ensures once.
+    /// Skipped when the last recent SUCCESSFUL ensure had this exact shape. The
+    /// 24-hour verification TTL avoids six redundant saves on every foreground,
+    /// while still repairing a subscription later removed or invalidated server-side.
+    /// Bump the shape tag when the subscription layout changes.
     private func refreshPushSubscriptions(userID: String) async {
-        let shape = "v2|\(userID)|\(participantID(for: userID))"
+        let shape = "v3|\(userID)|\(participantID(for: userID))"
             + "|d:\(notifications.drawingAlerts)|r:\(notifications.reactionAlerts)"
         let defaults = UserDefaults.standard
-        guard defaults.string(forKey: Self.subscriptionShapeKey) != shape else { return }
+        let lastVerified = defaults.object(forKey: Self.subscriptionVerifiedAtKey) as? Date
+        let recentlyVerified = lastVerified.map {
+            Date().timeIntervalSince($0) < Self.subscriptionVerificationTTL
+        } ?? false
+        guard defaults.string(forKey: Self.subscriptionShapeKey) != shape || !recentlyVerified else { return }
         let saved = await service.ensureSubscription(
             userID: userID,
             participantID: participantID(for: userID),
             drawingAlertsVisible: notifications.drawingAlerts,
             reactionAlertsVisible: notifications.reactionAlerts
         )
-        if saved { defaults.set(shape, forKey: Self.subscriptionShapeKey) }
+        if saved {
+            defaults.set(shape, forKey: Self.subscriptionShapeKey)
+            defaults.set(Date(), forKey: Self.subscriptionVerifiedAtKey)
+        }
     }
 
     /// Full sync: account check, account-switch handling, identity, friends,
@@ -189,10 +204,13 @@ final class AppModel {
             outbox = []
             UserDefaults.standard.removeObject(forKey: "lastRecipients")
             UserDefaults.standard.removeObject(forKey: "lastDrawingFetch")
+            UserDefaults.standard.removeObject(forKey: "lastDrawingServerFetch.v2")
             UserDefaults.standard.removeObject(forKey: "lastReactionFetch")
+            UserDefaults.standard.removeObject(forKey: "lastReactionServerFetch.v2")
             UserDefaults.standard.removeObject(forKey: Self.reactionOutboxKey)
             UserDefaults.standard.removeObject(forKey: Self.inboxSeenKey)
             UserDefaults.standard.removeObject(forKey: Self.subscriptionShapeKey)
+            UserDefaults.standard.removeObject(forKey: Self.subscriptionVerifiedAtKey)
             inboxHasUnread = false
             clearInviteCode()
             WidgetCenter.shared.reloadAllTimelines()
@@ -225,9 +243,8 @@ final class AppModel {
         account = await service.accountState()
         if case let .available(userID) = account, profile != nil {
             if phase == .iCloudUnavailable { await bootstrap(); return }
-            // Re-assert the push subscription each foreground — idempotent, and it
-            // self-heals if the very first attempt failed (e.g. before the
-            // recipientID index existed), so the recipient's widget gets pushes.
+            // Re-assert when the shape changed or its successful verification is
+            // older than the TTL. Failed attempts are never cached.
             await refreshPushSubscriptions(userID: userID)
             // Pick up friends added by the other party (bookkeeping; banners gate off
             // while foregrounded — the friends list itself is the cue).
@@ -262,25 +279,63 @@ final class AppModel {
     /// refresh (a whole query + profile fetch) only runs for friendship pushes —
     /// a drawing needs no roster; its sender's name and token ride the record.
     @discardableResult
-    func handlePush(subscriptionID: String? = nil) async -> Bool {
+    func handlePush(subscriptionID: String? = nil, recordID: CKRecord.ID? = nil) async -> Bool {
         if case .available = account {} else { account = await service.accountState() }
         guard case let .available(userID) = account else { return false }
-        let drawings = (try? await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
-        refreshInboxUnread()
-        if !drawings.isEmpty {
-            WidgetCenter.shared.reloadAllTimelines()
-            if inboxHasUnread { inboxShimmerNonce &+= 1 }   // live arrival → shimmer next render
-            notifications.noteReceivedFromFriend()          // the one allowed re-prime
+        let recipientIDs = incomingRecipientIDs(for: userID)
+        let isDrawingPush = subscriptionID?.hasPrefix("drawings-to-") ?? false
+        let isReactionPush = subscriptionID?.hasPrefix("reactions-to-") ?? false
+        let isFriendshipPush = subscriptionID?.hasPrefix("friendships-of-") ?? false
+        let unknownOrigin = subscriptionID == nil
+        var changed = false
+
+        // Fast path first: a query push names the exact record. This is independent
+        // of the eventually-consistent public query index and makes notification
+        // taps land their content before the inbox sheet reads the store.
+        if (isDrawingPush || unknownOrigin), let recordID {
+            do {
+                let exact = try await service.fetchIncoming(
+                    recordID: recordID, recipientIDs: recipientIDs)
+                changed = landIncoming(exact) || changed
+                // Even if the notification extension already inserted it, wake any
+                // currently open inbox so it re-reads the shared store.
+                deliveryRevision &+= 1
+            } catch {
+                lastError = "Push drawing fetch: \(error.localizedDescription)"
+            }
+        } else if (isReactionPush || unknownOrigin), let recordID {
+            do {
+                if try await service.fetchReaction(recordID: recordID, recipientIDs: recipientIDs) != nil {
+                    deliveryRevision &+= 1
+                    changed = true
+                }
+            } catch {
+                lastError = "Push reaction fetch: \(error.localizedDescription)"
+            }
         }
-        let reactions = (try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))) ?? []
-        // nil subscriptionID = origin unknown → do the full sweep.
-        let isFriendshipPush = subscriptionID?.hasPrefix("friendships-of-") ?? true
-        let newFriends = isFriendshipPush ? await refreshFriends() : []
+
+        // Pushes are coalescible hints, so reconcile the matching stream after the
+        // exact record has landed. Unknown/legacy pushes sweep all streams.
+        if isDrawingPush || unknownOrigin {
+            do {
+                changed = landIncoming(try await service.fetchIncoming(recipientIDs: recipientIDs)) || changed
+            } catch {
+                lastError = "Incoming fetch: \(error.localizedDescription)"
+            }
+        }
+        if isReactionPush || unknownOrigin {
+            if let reactions = try? await service.fetchReactions(recipientIDs: recipientIDs),
+               !reactions.isEmpty {
+                deliveryRevision &+= 1
+                changed = true
+            }
+        }
+
+        let newFriends = (isFriendshipPush || unknownOrigin) ? await refreshFriends() : []
         // Drawing/reaction banners are SERVER pushes now (rewritten by the service
         // extension); locally we keep the connected banner + first-sender records.
         await PushNotifier.notifyNewFriends(newFriends)
-        PushNotifier.recordDrawingArrivals(drawings)
-        return !drawings.isEmpty || !reactions.isEmpty || !newFriends.isEmpty
+        return changed || !newFriends.isEmpty
     }
 
     // MARK: - Onboarding
@@ -319,8 +374,10 @@ final class AppModel {
         let defaults = UserDefaults.standard
         // subscriptionShapeKey too: the server-side subscriptions were just
         // deleted, so the "already ensured" cache would leave this device deaf.
-        for key in ["lastUserRecordName", "lastDrawingFetch", "redeemAttempts", "lastRecipients",
-                    "dotdotDeviceID", Self.inboxSeenKey, Self.subscriptionShapeKey] {
+        for key in ["lastUserRecordName", "lastDrawingFetch", "lastDrawingServerFetch.v2",
+                    "lastReactionFetch", "lastReactionServerFetch.v2", "redeemAttempts", "lastRecipients",
+                    "dotdotDeviceID", Self.inboxSeenKey, Self.subscriptionShapeKey,
+                    Self.subscriptionVerifiedAtKey] {
             defaults.removeObject(forKey: key)
         }
         clearInviteCode()
@@ -523,8 +580,8 @@ final class AppModel {
         let willDeliver = profile != nil && !recipientIDs.isEmpty
         GridStore.shared.appendSent(SentMessage(id: messageID, drawing: echo, recipients: recipients,
                                                 status: willDeliver ? .sending : .localOnly))
-
-        WidgetCenter.shared.reloadAllTimelines()
+        deliveryRevision &+= 1
+        reloadDefaultWidget()
 
         guard let profile, !recipientIDs.isEmpty else { return }   // local-only send
 
@@ -558,10 +615,6 @@ final class AppModel {
     /// True when there are sends waiting on connectivity.
     var hasPendingSends: Bool { !outbox.isEmpty }
 
-    /// A send stops retrying after this many flush attempts and goes .failed —
-    /// resend resets the count.
-    nonisolated static let sendAttemptCap = 5
-
     /// Pure transition for one outbox item after a flush attempt — kept free of
     /// I/O so the retry policy is unit-testable.
     enum FlushOutcome: Equatable {
@@ -574,9 +627,12 @@ final class AppModel {
                                          attemptsSoFar: Int) -> FlushOutcome {
         guard !result.succeeded else { return .sent }
         let attempts = attemptsSoFar + 1
-        if result.isTerminal || attempts >= sendAttemptCap {
+        if result.isTerminal {
             return .gaveUp(failedRecipientIDs: result.failedRecipientIDs)
         }
+        // Transient delivery failures remain durable until connectivity, account,
+        // or CloudKit recovers. Dropping them after an arbitrary attempt count was
+        // convenient for the UI but violated the outbox's no-loss contract.
         return .retrying(failedRecipientIDs: result.failedRecipientIDs, attempts: attempts)
     }
 
@@ -586,6 +642,8 @@ final class AppModel {
     static let flushTaskID = "com.kolteaditya.dotgrid.flush"
 
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var isFlushingOutbox = false
+    @ObservationIgnored private var outboxFlushRequested = false
 
     /// Foreground retry loop: while anything is queued, back off 5s → 15s → 60s,
     /// then hold at 5 min. Runs only while the app is active; cancelled when the
@@ -642,41 +700,64 @@ final class AppModel {
     }
 
     func flushOutbox() async {
+        outboxFlushRequested = true
+        guard !isFlushingOutbox else { return }
+        isFlushingOutbox = true
+        defer { isFlushingOutbox = false }
+
         await flushReactions()
         guard let profile, isOnline, !outbox.isEmpty else { return }
         let senderID = participantID(for: profile.id)
-        var remaining: [QueuedSend] = []
-        for item in outbox {
-            let result = await service.sendMessage(
-                kind: item.kind, grid: item.grid, imageData: item.imageData,
-                to: item.recipientIDs, from: profile, senderID: senderID,
-                messageID: item.id
-            )
-            // Surface the cause — a silent queue is undebuggable (this is what
-            // let sends rot with the debug panel claiming "none").
-            if let error = result.lastError {
-                lastError = "Send: \(error.localizedDescription)"
+        var attemptedIDs = Set<String>()
+
+        while isOnline {
+            outboxFlushRequested = false
+            let ids = outbox.map(\.id).filter { !attemptedIDs.contains($0) }
+            guard !ids.isEmpty else { break }
+            for id in ids {
+                guard !Task.isCancelled,
+                      let item = outbox.first(where: { $0.id == id }) else { continue }
+                attemptedIDs.insert(id)
+                let result = await service.sendMessage(
+                    kind: item.kind, grid: item.grid, imageData: item.imageData,
+                    to: item.recipientIDs, from: profile, senderID: senderID,
+                    messageID: item.id, sentAt: item.createdAt
+                )
+                // Surface the cause — a silent queue is undebuggable (this is what
+                // let sends rot with the debug panel claiming "none").
+                if let error = result.lastError {
+                    lastError = "Send: \(error.localizedDescription)"
+                } else if lastError?.hasPrefix("Send:") == true {
+                    lastError = nil
+                }
+                switch Self.flushOutcome(after: result, attemptsSoFar: item.attempts) {
+                case .sent:
+                    outbox.removeAll { $0.id == item.id }
+                    GridStore.shared.updateSentStatus(id: item.id, status: .sent)
+                case .gaveUp(let failedIDs):
+                    outbox.removeAll { $0.id == item.id }
+                    // The sent tab shows "not sent yet" with a resend.
+                    GridStore.shared.updateSentStatus(id: item.id, status: .failed,
+                                                      failedRecipientIDs: failedIDs)
+                    notifySendGaveUp(messageID: item.id)   // only on giving up, never per retry
+                case .retrying(let failedIDs, let attempts):
+                    if let index = outbox.firstIndex(where: { $0.id == item.id }) {
+                        outbox[index].recipientIDs = failedIDs
+                        outbox[index].attempts = attempts
+                        outbox[index].lastErrorDescription = result.lastError?.localizedDescription
+                    }
+                    GridStore.shared.updateSentStatus(id: item.id, status: .sending,
+                                                      failedRecipientIDs: failedIDs)
+                }
+                GridStore.shared.saveOutbox(outbox)
+                deliveryRevision &+= 1
             }
-            switch Self.flushOutcome(after: result, attemptsSoFar: item.attempts) {
-            case .sent:
-                GridStore.shared.updateSentStatus(id: item.id, status: .sent)
-            case .gaveUp(let failedIDs):
-                // The sent tab shows "not sent yet" with a resend.
-                GridStore.shared.updateSentStatus(id: item.id, status: .failed,
-                                                  failedRecipientIDs: failedIDs)
-                notifySendGaveUp(messageID: item.id)   // only on giving up, never per retry
-            case .retrying(let failedIDs, let attempts):
-                var retry = item
-                retry.recipientIDs = failedIDs
-                retry.attempts = attempts
-                retry.lastErrorDescription = result.lastError?.localizedDescription
-                remaining.append(retry)
-                GridStore.shared.updateSentStatus(id: item.id, status: .sending,
-                                                  failedRecipientIDs: failedIDs)
-            }
+
+            // A send appended while CloudKit was awaiting set the request flag and
+            // is not in attemptedIDs, so the next pass picks it up. Existing failed
+            // items wait for the scheduled backoff instead of hot-looping.
+            if !outboxFlushRequested { break }
         }
-        outbox = remaining
-        GridStore.shared.saveOutbox(outbox)
         // Anything left keeps retrying on the foreground backoff loop.
         if !outbox.isEmpty { scheduleRetryLoop() }
     }
@@ -711,7 +792,8 @@ final class AppModel {
             guard !targets.isEmpty else { return }
             outbox.append(QueuedSend(id: id, kind: message.drawing.kind, grid: message.drawing.grid,
                                      imageData: message.drawing.imageData, recipientIDs: targets,
-                                     senderName: profile.name, token: profile.token, createdAt: Date()))
+                                     senderName: profile.name, token: profile.token,
+                                     createdAt: message.sentAt))
         }
         GridStore.shared.saveOutbox(outbox)
         GridStore.shared.updateSentStatus(id: id, status: .sending)
@@ -721,7 +803,7 @@ final class AppModel {
     // MARK: - Reactions
 
     /// A reaction op waiting on connectivity (nil emoji = un-react).
-    private struct QueuedReaction: Codable {
+    private struct QueuedReaction: Codable, Equatable {
         var emoji: String?
         var messageID: String?
         var drawingSentAt: Date
@@ -738,7 +820,8 @@ final class AppModel {
         let newValue = drawing.myReaction == emoji ? nil : emoji
 
         GridStore.shared.applyMyReaction(newValue, senderID: drawing.senderID, sentAt: drawing.sentAt)
-        WidgetCenter.shared.reloadAllTimelines()   // the emoji sticks on the widget
+        deliveryRevision &+= 1
+        reloadReceivedWidgets()   // the emoji sticks on the widget
 
         var queue = loadReactionQueue()
         // A newer op for the same dotdot supersedes any queued one.
@@ -750,24 +833,46 @@ final class AppModel {
         return newValue
     }
 
+    @ObservationIgnored private var isFlushingReactions = false
+    @ObservationIgnored private var reactionFlushRequested = false
+
     private func flushReactions() async {
+        reactionFlushRequested = true
+        guard !isFlushingReactions else { return }
         guard let profile, isOnline else { return }
-        let queue = loadReactionQueue()
-        guard !queue.isEmpty else { return }
+        isFlushingReactions = true
+        defer { isFlushingReactions = false }
         let reactorID = participantID(for: profile.id)
-        var remaining: [QueuedReaction] = []
-        for op in queue {
-            if let emoji = op.emoji {
-                let ok = await service.sendReaction(emoji: emoji, messageID: op.messageID,
-                                                    drawingSentAt: op.drawingSentAt,
-                                                    to: op.recipientID, from: profile, reactorID: reactorID)
-                if !ok { remaining.append(op) }
-            } else {
-                await service.removeReaction(messageID: op.messageID,
-                                             drawingSentAt: op.drawingSentAt, reactorID: reactorID)
+        var attempted: [QueuedReaction] = []
+
+        while isOnline {
+            reactionFlushRequested = false
+            let queue = loadReactionQueue().filter { !attempted.contains($0) }
+            guard !queue.isEmpty else { break }
+            for op in queue {
+                attempted.append(op)
+                let succeeded: Bool
+                if let emoji = op.emoji {
+                    succeeded = await service.sendReaction(
+                        emoji: emoji, messageID: op.messageID,
+                        drawingSentAt: op.drawingSentAt,
+                        to: op.recipientID, from: profile, reactorID: reactorID)
+                } else {
+                    await service.removeReaction(messageID: op.messageID,
+                                                 drawingSentAt: op.drawingSentAt,
+                                                 reactorID: reactorID)
+                    succeeded = true
+                }
+                if succeeded {
+                    // Remove only this exact operation from the CURRENT queue. A
+                    // newer tap written while we awaited CloudKit must survive.
+                    var current = loadReactionQueue()
+                    current.removeAll { $0 == op }
+                    saveReactionQueue(current)
+                }
             }
+            if !reactionFlushRequested { break }
         }
-        saveReactionQueue(remaining)
     }
 
     private func loadReactionQueue() -> [QueuedReaction] {
@@ -806,18 +911,38 @@ final class AppModel {
         do {
             let drawings = try await service.fetchIncoming(recipientIDs: incomingRecipientIDs(for: userID))
             if lastError?.hasPrefix("Incoming fetch:") == true { lastError = nil }
-            if !drawings.isEmpty {
-                WidgetCenter.shared.reloadAllTimelines()
-                notifications.noteReceivedFromFriend()   // the one allowed re-prime
-            }
-            // Bookkeeping so the extension's first-dotdot copy can't fire late.
-            PushNotifier.recordDrawingArrivals(drawings)
+            _ = landIncoming(drawings)
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }
         // Reactions to dotdots I sent (updates the sent feed; no widget content).
-        _ = try? await service.fetchReactions(recipientIDs: incomingRecipientIDs(for: userID))
+        if let reactions = try? await service.fetchReactions(
+            recipientIDs: incomingRecipientIDs(for: userID)), !reactions.isEmpty {
+            deliveryRevision &+= 1
+        }
         refreshInboxUnread()
+    }
+
+    /// Apply the shared post-ingest effects exactly once for newly inserted rows.
+    @discardableResult
+    private func landIncoming(_ drawings: [DisplayDrawing]) -> Bool {
+        guard !drawings.isEmpty else { return false }
+        refreshInboxUnread()
+        reloadReceivedWidgets()
+        deliveryRevision &+= 1
+        if inboxHasUnread { inboxShimmerNonce &+= 1 }
+        notifications.noteReceivedFromFriend()
+        PushNotifier.recordDrawingArrivals(drawings)
+        return true
+    }
+
+    private func reloadDefaultWidget() {
+        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.widgetKind)
+    }
+
+    private func reloadReceivedWidgets() {
+        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.widgetKind)
+        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.friendWidgetKind)
     }
 
     private func participantID(for userID: String) -> String {

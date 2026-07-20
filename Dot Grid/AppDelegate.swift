@@ -59,7 +59,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         Task {
             // The subscription id tells handlePush what the push is for, so a
             // drawing push doesn't burn its background budget refreshing friends.
-            let fetched = await AppModel.shared.handlePush(subscriptionID: note.subscriptionID)
+            let queryNote = note as? CKQueryNotification
+            let fetched = await AppModel.shared.handlePush(
+                subscriptionID: note.subscriptionID,
+                recordID: queryNote?.recordID)
             // Report honestly — iOS tracks this to decide how eagerly to keep
             // waking us for future silent pushes.
             completionHandler(fetched ? .newData : .noData)
@@ -92,7 +95,39 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard let route = NotificationRoute(userInfo: response.notification.request.content.userInfo) else { return }
+        let userInfo = response.notification.request.content.userInfo
+        let cloudNote = CKNotification(fromRemoteNotificationDictionary: userInfo) as? CKQueryNotification
+        let subscriptionID = cloudNote?.subscriptionID
+            ?? userInfo[NotificationDeliveryKey.subscriptionID] as? String
+        let recordID = cloudNote?.recordID
+            ?? (userInfo[NotificationDeliveryKey.recordName] as? String).map(CKRecord.ID.init(recordName:))
+
+        // Finish exact ingestion before the inbox sheet snapshots GridStore.
+        if subscriptionID != nil || recordID != nil {
+            _ = await AppModel.shared.handlePush(
+                subscriptionID: subscriptionID,
+                recordID: recordID)
+        }
+
+        var route = NotificationRoute(userInfo: userInfo)
+        if route == nil, let fields = cloudNote?.recordFields {
+            if subscriptionID?.hasPrefix("drawings-to-") == true,
+               let senderID = fields["senderID"] as? String,
+               let sentAt = fields["sentAt"] as? Date {
+                route = .receivedDrawing(senderID: senderID, sentAt: sentAt)
+            } else if subscriptionID?.hasPrefix("reactions-to-") == true,
+                      let messageID = fields["messageID"] as? String {
+                route = .sentDrawing(messageID: messageID)
+            }
+        }
+        // If CloudKit pruned desiredKeys, derive the route from the exact row that
+        // handlePush just committed.
+        if route == nil, subscriptionID?.hasPrefix("drawings-to-") == true,
+           let recordName = recordID?.recordName,
+           let drawing = GridStore.shared.receivedHistory().first(where: { $0.recordName == recordName }) {
+            route = .receivedDrawing(senderID: drawing.senderID, sentAt: drawing.sentAt)
+        }
+        guard let route else { return }
         await MainActor.run { AppModel.shared.pendingRoute = route }
     }
 }

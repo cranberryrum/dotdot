@@ -22,13 +22,17 @@ struct GridStore {
 
     private static let canvasKey = "currentGrid"        // composer's last canvas
     private static let localEchoKey = "localEcho"       // your own last send (fallback display)
+    private static let localEchoUpdatedAtKey = "localEchoUpdatedAt.v2"
     private static let latestReceivedKey = "latestReceived"
+    private static let latestReceivedUpdatedAtKey = "latestReceivedUpdatedAt.v2"
     private static let rosterKey = "friendRoster"
     private static let profileKey = "myProfile"
     private static let outboxKey = "outbox"
     private static let receivedHistoryKey = "receivedHistory"   // inbox: dotdots from others
     private static let sentHistoryKey = "sentHistory"           // inbox: dotdots you sent
     private static let latestReceivedAtKey = "latestReceivedAt" // unread check (a Date, no blob)
+    private static let latestReceivedIngestedAtKey = "latestReceivedIngestedAt.v2"
+    private static let pendingIncomingRecordNamesKey = "pendingIncomingRecordNames"
     private static func friendDisplayKey(_ id: String) -> String { "display.\(id)" }
 
     /// How many messages each inbox feed keeps. Bounds the App Group footprint —
@@ -50,38 +54,82 @@ struct GridStore {
     /// Works without a profile, so the local loop is solid even before iCloud.
     func saveLocalEcho(_ drawing: DisplayDrawing) {
         encode(drawing, forKey: Self.localEchoKey)
+        defaults?.set(Date(), forKey: Self.localEchoUpdatedAtKey)
     }
 
-    /// A drawing received from a friend. Updates that friend's slot, appends to the
-    /// inbox's "received" feed, and, if it's the newest, the "latest from anyone"
-    /// slot the default widget shows. The single choke point for incoming drawings.
-    func saveReceived(_ drawing: DisplayDrawing) {
-        encode(drawing, forKey: Self.friendDisplayKey(drawing.senderID))
-        prependReceivedHistory(drawing)
-        // A lightweight high-water timestamp so the inbox can check for unread
-        // dotdots without decoding the stored image blobs.
-        let prevNewest = (defaults?.object(forKey: Self.latestReceivedAtKey) as? Date) ?? .distantPast
-        if drawing.sentAt > prevNewest {
-            defaults?.set(drawing.sentAt, forKey: Self.latestReceivedAtKey)
+    /// A drawing received from a friend. Every projection is monotonic: a late
+    /// lookback result can fill its true feed position but can never roll either
+    /// widget slot back to older content. Returns true only for a genuinely new
+    /// inbox row, so callers don't announce/reload duplicate push deliveries.
+    @discardableResult
+    func saveReceived(_ drawing: DisplayDrawing) -> Bool {
+        let inserted = insertReceivedHistory(drawing)
+
+        if let current = decode(DisplayDrawing.self, forKey: Self.friendDisplayKey(drawing.senderID)) {
+            if current.orderingDate < drawing.orderingDate {
+                encode(drawing, forKey: Self.friendDisplayKey(drawing.senderID))
+            }
+        } else {
+            encode(drawing, forKey: Self.friendDisplayKey(drawing.senderID))
         }
-        if let current = decode(DisplayDrawing.self, forKey: Self.latestReceivedKey),
-           current.sentAt >= drawing.sentAt {
-            return
+
+        if let current = decode(DisplayDrawing.self, forKey: Self.latestReceivedKey) {
+            if current.orderingDate < drawing.orderingDate {
+                encode(drawing, forKey: Self.latestReceivedKey)
+                defaults?.set(Date(), forKey: Self.latestReceivedUpdatedAtKey)
+            }
+        } else {
+            encode(drawing, forKey: Self.latestReceivedKey)
+            defaults?.set(Date(), forKey: Self.latestReceivedUpdatedAtKey)
         }
-        encode(drawing, forKey: Self.latestReceivedKey)
+
+        // Unread is based on when THIS device first ingested a new row, never on
+        // an untrusted sender clock. Duplicate app/extension deliveries don't
+        // resurrect an already-seen message.
+        if inserted { defaults?.set(Date(), forKey: Self.latestReceivedIngestedAtKey) }
+        return inserted
     }
 
     /// When the newest received dotdot arrived, or nil if none. A plain Date, so the
     /// unread check stays cheap (no image decode). Forward-only: dotdots received
     /// before this shipped don't count.
     func latestReceivedAt() -> Date? {
-        defaults?.object(forKey: Self.latestReceivedAtKey) as? Date
+        defaults?.object(forKey: Self.latestReceivedIngestedAtKey) as? Date
     }
 
-    /// What the default widget shows: latest from any friend, else your own echo.
+    /// Pick the latest activity in either direction. Previously any received
+    /// drawing permanently shadowed newer local sends, which is why the default
+    /// widget often appeared stuck on an old friend dotdot after sending.
     func latestDisplayDrawing() -> DisplayDrawing? {
-        decode(DisplayDrawing.self, forKey: Self.latestReceivedKey)
-            ?? decode(DisplayDrawing.self, forKey: Self.localEchoKey)
+        Self.latestDisplayDrawing(
+            received: decode(DisplayDrawing.self, forKey: Self.latestReceivedKey),
+            local: decode(DisplayDrawing.self, forKey: Self.localEchoKey),
+            receivedStoredAt: defaults?.object(forKey: Self.latestReceivedUpdatedAtKey) as? Date,
+            localStoredAt: defaults?.object(forKey: Self.localEchoUpdatedAtKey) as? Date
+        )
+    }
+
+    nonisolated static func latestDisplayDrawing(
+        received: DisplayDrawing?, local: DisplayDrawing?,
+        receivedStoredAt: Date? = nil, localStoredAt: Date? = nil
+    ) -> DisplayDrawing? {
+        switch (received, local) {
+        case let (received?, local?):
+            // These timestamps share this device's clock domain and mean "when did
+            // this projection change?" A just-sent local echo therefore wins even
+            // when the phone clock disagrees with CloudKit's server clock. A single
+            // non-nil value means that side changed after this key shipped.
+            switch (receivedStoredAt, localStoredAt) {
+            case let (receivedAt?, localAt?): return localAt >= receivedAt ? local : received
+            case (.some, nil): return received
+            case (nil, .some): return local
+            case (nil, nil): break   // upgrade fallback for two legacy slots
+            }
+            return local.orderingDate >= received.orderingDate ? local : received
+        case let (received?, nil): return received
+        case let (nil, local?): return local
+        case (nil, nil): return nil
+        }
     }
 
     /// What a pinned per-friend widget shows.
@@ -115,14 +163,16 @@ struct GridStore {
 
     /// Identity sets for everything already received — lets the fetch layer skip
     /// records it has BEFORE downloading their assets.
-    func receivedIdentities() -> (messageIDs: Set<String>, senderTimes: Set<String>) {
+    func receivedIdentities() -> (recordNames: Set<String>, messageIDs: Set<String>, senderTimes: Set<String>) {
+        var recordNames = Set<String>()
         var messageIDs = Set<String>()
         var senderTimes = Set<String>()
         for drawing in receivedHistory() {
+            if let name = drawing.recordName { recordNames.insert(name) }
             if let id = drawing.messageID { messageIDs.insert(id) }
             senderTimes.insert(Self.senderTimeKey(senderID: drawing.senderID, sentAt: drawing.sentAt))
         }
-        return (messageIDs, senderTimes)
+        return (recordNames, messageIDs, senderTimes)
     }
 
     /// Collapse twins — same messageID, or same sender + exact sentAt (the
@@ -131,15 +181,21 @@ struct GridStore {
     /// loses a reaction stamped on a later twin.
     nonisolated static func dedupingReceived(_ items: [DisplayDrawing]) -> [DisplayDrawing] {
         var kept: [DisplayDrawing] = []
+        var indexByRecordName: [String: Int] = [:]
         var indexByMessageID: [String: Int] = [:]
         var indexBySenderTime: [String: Int] = [:]
         for item in items {
             let timeKey = senderTimeKey(senderID: item.senderID, sentAt: item.sentAt)
-            let twin = item.messageID.flatMap { indexByMessageID[$0] } ?? indexBySenderTime[timeKey]
+            let twin = item.recordName.flatMap { indexByRecordName[$0] }
+                ?? item.messageID.flatMap { indexByMessageID[$0] }
+                ?? indexBySenderTime[timeKey]
             if let twin {
                 if kept[twin].myReaction == nil { kept[twin].myReaction = item.myReaction }
+                if kept[twin].recordName == nil { kept[twin].recordName = item.recordName }
+                if kept[twin].serverCreatedAt == nil { kept[twin].serverCreatedAt = item.serverCreatedAt }
                 continue
             }
+            if let recordName = item.recordName { indexByRecordName[recordName] = kept.count }
             if let messageID = item.messageID { indexByMessageID[messageID] = kept.count }
             indexBySenderTime[timeKey] = kept.count
             kept.append(item)
@@ -151,29 +207,49 @@ struct GridStore {
     /// the lookback window after falling out of the capped history lands at its
     /// true position (or straight off the trimmed end) — never at the top.
     nonisolated static func insertionIndex(for drawing: DisplayDrawing, in items: [DisplayDrawing]) -> Int {
-        items.firstIndex { $0.sentAt <= drawing.sentAt } ?? items.endIndex
+        items.firstIndex { $0.orderingDate <= drawing.orderingDate } ?? items.endIndex
     }
 
-    private func prependReceivedHistory(_ drawing: DisplayDrawing) {
+    private func insertReceivedHistory(_ drawing: DisplayDrawing) -> Bool {
         var items = receivedHistory()
         // Idempotent: the notification service extension AND the app's fetch paths
         // can both deliver the same record — the second arrival is a no-op (which
         // also preserves any reaction already attached locally). Matched by
         // messageID OR sender+time, so a stored copy that predates messageID
         // still counts as the same drawing.
-        let duplicate = items.contains { existing in
+        let duplicateIndex = items.firstIndex { existing in
+            if let recordName = drawing.recordName, existing.recordName == recordName { return true }
             if let messageID = drawing.messageID, existing.messageID == messageID { return true }
             return existing.senderID == drawing.senderID && existing.sentAt == drawing.sentAt
         }
-        guard !duplicate else { return }
+        if let duplicateIndex {
+            // Upgrade a legacy cached row with its exact server identity/clock.
+            var existing = items[duplicateIndex]
+            var changed = false
+            if existing.recordName == nil, drawing.recordName != nil {
+                existing.recordName = drawing.recordName
+                changed = true
+            }
+            if existing.serverCreatedAt == nil, drawing.serverCreatedAt != nil {
+                existing.serverCreatedAt = drawing.serverCreatedAt
+                changed = true
+            }
+            if changed {
+                items[duplicateIndex] = existing
+                encode(items, forKey: Self.receivedHistoryKey)
+            }
+            return false
+        }
         items.insert(drawing, at: Self.insertionIndex(for: drawing, in: items))
         if items.count > Self.historyLimit { items = Array(items.prefix(Self.historyLimit)) }
         encode(items, forKey: Self.receivedHistoryKey)
+        return true
     }
 
     // MARK: - Incoming fetch high-water mark (shared with the service extension)
 
     private static let lastDrawingFetchKey = "lastDrawingFetch"
+    private static let lastDrawingServerFetchKey = "lastDrawingServerFetch.v2"
 
     /// When the last incoming-drawings fetch reached. Lives in the App Group so the
     /// app and the notification service extension share one clock; migrates the old
@@ -191,6 +267,40 @@ struct GridStore {
             return nil
         }
         nonmutating set { defaults?.set(newValue, forKey: Self.lastDrawingFetchKey) }
+    }
+
+    /// Server-authored high-water mark used by the new receive query. Kept
+    /// separate from the legacy sender-clock mark so migration never compares
+    /// dates from two different clock domains.
+    var lastDrawingServerFetch: Date? {
+        get { defaults?.object(forKey: Self.lastDrawingServerFetchKey) as? Date }
+        nonmutating set { defaults?.set(newValue, forKey: Self.lastDrawingServerFetchKey) }
+    }
+
+    // MARK: - Durable incoming retry queue
+
+    /// Push IDs and metadata discoveries remain here until their full payload is
+    /// decoded and committed. A repeatedly failing asset therefore cannot age out
+    /// of the reconciliation window and disappear forever.
+    func pendingIncomingRecordNames() -> [String] {
+        defaults?.stringArray(forKey: Self.pendingIncomingRecordNamesKey) ?? []
+    }
+
+    func enqueueIncomingRecordName(_ name: String) {
+        guard !name.isEmpty else { return }
+        var names = pendingIncomingRecordNames()
+        guard !names.contains(name) else { return }
+        names.append(name)
+        // Defensive bound against a permanently malformed server record set.
+        if names.count > 500 { names.removeFirst(names.count - 500) }
+        defaults?.set(names, forKey: Self.pendingIncomingRecordNamesKey)
+    }
+
+    func finishIncomingRecordName(_ name: String) {
+        var names = pendingIncomingRecordNames()
+        guard let index = names.firstIndex(of: name) else { return }
+        names.remove(at: index)
+        defaults?.set(names, forKey: Self.pendingIncomingRecordNamesKey)
     }
 
     /// Newest-first list of dotdots you sent.
@@ -244,7 +354,8 @@ struct GridStore {
     /// `messageID` when the drawing carried one; otherwise the nearest sent-time
     /// within a small tolerance (dotdots sent before messageID shipped). One
     /// reaction per person — a newer one replaces theirs.
-    func applyIncomingReaction(_ reaction: ReactionInfo, messageID: String?, drawingSentAt: Date) {
+    @discardableResult
+    func applyIncomingReaction(_ reaction: ReactionInfo, messageID: String?, drawingSentAt: Date) -> Bool {
         var items = sentHistory()
         let index: Int?
         if let messageID, let exact = items.firstIndex(where: { $0.id == messageID }) {
@@ -255,10 +366,14 @@ struct GridStore {
                 .min { abs(items[$0].sentAt.timeIntervalSince(drawingSentAt))
                      < abs(items[$1].sentAt.timeIntervalSince(drawingSentAt)) }
         }
-        guard let index else { return }   // scrolled out of the capped history — drop
+        guard let index else { return false }   // scrolled out of the capped history — drop
+        if items[index].reactions.first(where: { $0.reactorID == reaction.reactorID }) == reaction {
+            return false
+        }
         items[index].reactions.removeAll { $0.reactorID == reaction.reactorID }
         items[index].reactions.insert(reaction, at: 0)
         encode(items, forKey: Self.sentHistoryKey)
+        return true
     }
 
     // MARK: - Friend roster (drives the configurable widget's picker)
@@ -308,13 +423,18 @@ struct GridStore {
 
     func clearSharedState() {
         guard let defaults else { return }
+        // Capture before removing rosterKey; otherwise account switches leave the
+        // old per-friend widget slots orphaned in the App Group indefinitely.
+        let friendIDs = roster().map(\.id)
         for key in [Self.localEchoKey, Self.latestReceivedKey, Self.rosterKey, Self.profileKey,
+                    Self.localEchoUpdatedAtKey, Self.latestReceivedUpdatedAtKey,
                     Self.outboxKey, Self.receivedHistoryKey, Self.sentHistoryKey, Self.latestReceivedAtKey,
-                    Self.lastDrawingFetchKey, Self.debugWidgetOverrideKey] {
+                    Self.latestReceivedIngestedAtKey, Self.pendingIncomingRecordNamesKey,
+                    Self.lastDrawingFetchKey, Self.lastDrawingServerFetchKey, Self.debugWidgetOverrideKey] {
             defaults.removeObject(forKey: key)
         }
-        for friend in roster() {
-            defaults.removeObject(forKey: Self.friendDisplayKey(friend.id))
+        for id in friendIDs {
+            defaults.removeObject(forKey: Self.friendDisplayKey(id))
         }
     }
 

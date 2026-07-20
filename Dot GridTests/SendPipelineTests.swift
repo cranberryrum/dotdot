@@ -12,7 +12,7 @@ import Testing
 
 struct SendPipelineTests {
 
-    // MARK: Flush transitions (success / partial / terminal / attempt cap)
+    // MARK: Flush transitions (success / partial / terminal / durable retry)
 
     private func result(failed: [String] = [], terminal: Bool = false) -> SharingService.SendResult {
         SharingService.SendResult(failedRecipientIDs: failed, lastError: nil, isTerminal: terminal)
@@ -35,15 +35,25 @@ struct SendPipelineTests {
         #expect(outcome == .gaveUp(failedRecipientIDs: ["a", "b"]))
     }
 
-    @Test func retryGivesUpAtTheAttemptCap() {
-        // One attempt below the cap: still retrying.
-        let below = AppModel.flushOutcome(after: result(failed: ["a"]),
-                                          attemptsSoFar: AppModel.sendAttemptCap - 2)
-        #expect(below == .retrying(failedRecipientIDs: ["a"], attempts: AppModel.sendAttemptCap - 1))
-        // The capping attempt: gives up.
-        let capped = AppModel.flushOutcome(after: result(failed: ["a"]),
-                                           attemptsSoFar: AppModel.sendAttemptCap - 1)
-        #expect(capped == .gaveUp(failedRecipientIDs: ["a"]))
+    @Test func transientFailureNeverAgesOutOfTheOutbox() {
+        // A phone can be offline for days. Attempts are diagnostic/backoff state,
+        // not a reason to destroy a message that CloudKit may still accept later.
+        let outcome = AppModel.flushOutcome(after: result(failed: ["a"]),
+                                            attemptsSoFar: 10_000)
+        #expect(outcome == .retrying(failedRecipientIDs: ["a"], attempts: 10_001))
+    }
+
+    // MARK: Stable server identity
+
+    @Test func drawingRecordNameIsStableAcrossRetriesAndScopedPerRecipient() {
+        let first = SharingService.drawingRecordName(messageID: "message-1", recipientID: "friend#one")
+        let retry = SharingService.drawingRecordName(messageID: "message-1", recipientID: "friend#one")
+        let anotherRecipient = SharingService.drawingRecordName(messageID: "message-1", recipientID: "friend#two")
+        let anotherMessage = SharingService.drawingRecordName(messageID: "message-2", recipientID: "friend#one")
+
+        #expect(first == retry)
+        #expect(first != anotherRecipient)
+        #expect(first != anotherMessage)
     }
 
     // MARK: Tolerant decoding (blobs persisted by older builds must still load)

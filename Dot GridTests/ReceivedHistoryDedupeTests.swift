@@ -16,10 +16,14 @@ import Testing
 struct ReceivedHistoryDedupeTests {
 
     private func drawing(sender: String = "f1", at seconds: TimeInterval = 700_000_000,
-                         messageID: String? = nil, reaction: String? = nil) -> DisplayDrawing {
+                         messageID: String? = nil, reaction: String? = nil,
+                         serverAt serverSeconds: TimeInterval? = nil,
+                         recordName: String? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .dots, grid: .empty, senderID: sender, senderName: "maya",
                        token: .placeholder, sentAt: Date(timeIntervalSinceReferenceDate: seconds),
-                       messageID: messageID, myReaction: reaction)
+                       messageID: messageID, myReaction: reaction,
+                       serverCreatedAt: serverSeconds.map(Date.init(timeIntervalSinceReferenceDate:)),
+                       recordName: recordName)
     }
 
     @Test func twinsByMessageIDCollapse() {
@@ -31,6 +35,14 @@ struct ReceivedHistoryDedupeTests {
         // A stored copy from before messageID shipped (nil) + its refetched twin
         // (carrying one) are the same drawing — sender + exact sentAt says so.
         let items = [drawing(messageID: nil), drawing(messageID: "m1")]
+        #expect(GridStore.dedupingReceived(items).count == 1)
+    }
+
+    @Test func twinsByExactCloudKitRecordNameCollapseDespiteDifferentClientFields() {
+        let items = [
+            drawing(sender: "f1", at: 1000, messageID: nil, recordName: "drawing-exact"),
+            drawing(sender: "f1", at: 1001, messageID: "m1", recordName: "drawing-exact"),
+        ]
         #expect(GridStore.dedupingReceived(items).count == 1)
     }
 
@@ -69,6 +81,42 @@ struct ReceivedHistoryDedupeTests {
         let feed = [drawing(at: 3000), drawing(at: 1000)]
         #expect(GridStore.insertionIndex(for: drawing(at: 4000), in: feed) == 0)
         #expect(GridStore.insertionIndex(for: drawing(at: 500), in: feed) == 2)
+    }
+
+    @Test func insertionUsesServerClockInsteadOfSkewedSenderClock() {
+        // The middle record's sender clock says it is newest, but CloudKit says it
+        // was created between the other two. The feed must follow the server.
+        let feed = [
+            drawing(at: 9_000, serverAt: 3_000),
+            drawing(at: 1_000, serverAt: 1_000),
+        ]
+        let skewed = drawing(at: 99_000, serverAt: 2_000)
+        #expect(GridStore.insertionIndex(for: skewed, in: feed) == 1)
+    }
+
+    // MARK: Default widget projection
+
+    @Test func newerLocalSendWinsEvenWhenAReceivedDrawingExists() {
+        // Even with a badly slow device clock, the local projection was updated
+        // after the received projection, so the send must appear immediately.
+        let received = drawing(at: 1_000, serverAt: 10_000)
+        let local = drawing(sender: "", at: 100)
+        let selected = GridStore.latestDisplayDrawing(
+            received: received, local: local,
+            receivedStoredAt: Date(timeIntervalSinceReferenceDate: 2_000),
+            localStoredAt: Date(timeIntervalSinceReferenceDate: 3_000))
+        #expect(selected?.sentAt == local.sentAt)
+    }
+
+    @Test func newerReceivedDrawingWinsUsingItsServerTime() {
+        let received = drawing(at: 100, serverAt: 3_000, recordName: "received-newer")
+        let local = drawing(sender: "", at: 2_000)
+        let selected = GridStore.latestDisplayDrawing(
+            received: received, local: local,
+            receivedStoredAt: Date(timeIntervalSinceReferenceDate: 4_000),
+            localStoredAt: Date(timeIntervalSinceReferenceDate: 3_000))
+        #expect(selected?.recordName == "received-newer")
+        #expect(selected?.senderID == "f1")
     }
 
     @Test func senderTimeKeyMatchesAcrossConstructions() {

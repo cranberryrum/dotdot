@@ -43,13 +43,15 @@ final class NotificationService: UNNotificationServiceExtension {
         let fields = note.recordFields ?? [:]
 
         if subscriptionID.hasPrefix("drawings-to-") {
-            prepareDrawingBanner(content, fields: fields)
+            prepareDrawingBanner(content, fields: fields, recordID: note.recordID,
+                                 subscriptionID: subscriptionID)
             ingestTask = Task { [weak self] in
                 await self?.ingestDrawing(recordID: note.recordID)
                 self?.finish()
             }
         } else if subscriptionID.hasPrefix("reactions-to-") {
-            prepareReactionBanner(content, fields: fields)
+            prepareReactionBanner(content, fields: fields, recordID: note.recordID,
+                                  subscriptionID: subscriptionID)
             ingestTask = Task { [weak self] in
                 await self?.ingestReaction(recordID: note.recordID)
                 self?.finish()
@@ -75,7 +77,8 @@ final class NotificationService: UNNotificationServiceExtension {
     // MARK: Banners (from the push payload — no fetch required)
 
     private func prepareDrawingBanner(_ content: UNMutableNotificationContent,
-                                      fields: [CKRecord.FieldKey: Any]) {
+                                      fields: [CKRecord.FieldKey: Any],
+                                      recordID: CKRecord.ID?, subscriptionID: String) {
         let senderName = fields["senderName"] as? String ?? ""
         let senderID = fields["senderID"] as? String ?? ""
         let kind = MessageKind(rawValue: fields["kind"] as? String ?? "") ?? .dots
@@ -84,32 +87,49 @@ final class NotificationService: UNNotificationServiceExtension {
         content.title = ""   // the app name reads as the title
         content.body = PushCopy.drawingBody(kind: kind, senderName: senderName,
                                             firstFromSender: firstEver)
+        content.interruptionLevel = .timeSensitive
+        content.relevanceScore = 1
         if !senderID.isEmpty {
             content.threadIdentifier = "drawings-\(senderID)"
             if let sentAt = fields["sentAt"] as? Date {
-                content.userInfo = NotificationRoute
+                var route = NotificationRoute
                     .receivedDrawing(senderID: senderID, sentAt: sentAt).userInfo
+                route[NotificationDeliveryKey.subscriptionID] = subscriptionID
+                route[NotificationDeliveryKey.recordName] = recordID?.recordName
+                content.userInfo = route
             }
             PushCopy.markSenderSeen(senderID)
         }
     }
 
     private func prepareReactionBanner(_ content: UNMutableNotificationContent,
-                                       fields: [CKRecord.FieldKey: Any]) {
+                                       fields: [CKRecord.FieldKey: Any],
+                                       recordID: CKRecord.ID?, subscriptionID: String) {
         let reactorName = fields["reactorName"] as? String ?? ""
         content.title = ""
         content.body = PushCopy.reactionBody(reactorName: reactorName)
+        content.interruptionLevel = .timeSensitive
+        content.relevanceScore = 1
         if let messageID = fields["messageID"] as? String {
             content.threadIdentifier = "reactions-\(messageID)"
-            content.userInfo = NotificationRoute.sentDrawing(messageID: messageID).userInfo
+            var route = NotificationRoute.sentDrawing(messageID: messageID).userInfo
+            route[NotificationDeliveryKey.subscriptionID] = subscriptionID
+            route[NotificationDeliveryKey.recordName] = recordID?.recordName
+            content.userInfo = route
         }
     }
 
     // MARK: Ingest (same decode + write the app's fetch path does)
 
     private func ingestDrawing(recordID: CKRecord.ID?) async {
-        guard let recordID,
-              let record = try? await container.publicCloudDatabase.record(for: recordID) else { return }
+        guard let recordID else { return }
+        GridStore.shared.enqueueIncomingRecordName(recordID.recordName)
+        let configuration = CKOperation.Configuration()
+        configuration.qualityOfService = .userInitiated
+        guard let record = try? await container.publicCloudDatabase.configuredWith(
+            configuration: configuration,
+            body: { database in try await database.record(for: recordID) }
+        ) else { return }
 
         let sentAt = (record["sentAt"] as? Date) ?? Date()
         let senderID = record["senderID"] as? String ?? ""
@@ -120,6 +140,8 @@ final class NotificationService: UNNotificationServiceExtension {
         )
         let kind = MessageKind(rawValue: record["kind"] as? String ?? "dots") ?? .dots
         let messageID = record["messageID"] as? String
+        let serverCreatedAt = record.creationDate
+        let recordName = record.recordID.recordName
 
         let drawing: DisplayDrawing
         switch kind {
@@ -129,17 +151,22 @@ final class NotificationService: UNNotificationServiceExtension {
                   let data = try? Data(contentsOf: url) else { return }
             drawing = kind == .doodle
                 ? .doodle(data, senderID: senderID, senderName: senderName, token: token,
-                          sentAt: sentAt, messageID: messageID)
+                          sentAt: sentAt, messageID: messageID,
+                          serverCreatedAt: serverCreatedAt, recordName: recordName)
                 : .photo(data, senderID: senderID, senderName: senderName, token: token,
-                         sentAt: sentAt, messageID: messageID)
+                         sentAt: sentAt, messageID: messageID,
+                         serverCreatedAt: serverCreatedAt, recordName: recordName)
         case .dots:
             guard let data = record["gridData"] as? Data,
                   let grid = try? JSONDecoder().decode(Grid.self, from: data) else { return }
             drawing = .dots(grid, senderID: senderID, senderName: senderName, token: token,
-                            sentAt: sentAt, messageID: messageID)
+                            sentAt: sentAt, messageID: messageID,
+                            serverCreatedAt: serverCreatedAt, recordName: recordName)
         }
-        GridStore.shared.saveReceived(drawing)   // idempotent vs the app's own fetch
-        WidgetCenter.shared.reloadAllTimelines() // the reveal happens on the widget
+        _ = GridStore.shared.saveReceived(drawing)   // idempotent vs the app's own fetch
+        GridStore.shared.finishIncomingRecordName(recordName)
+        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.widgetKind)
+        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.friendWidgetKind)
     }
 
     private func ingestReaction(recordID: CKRecord.ID?) async {

@@ -4,7 +4,7 @@
 //
 //  Display-only widgets (systemSmall + systemLarge). They ONLY read the App Group
 //  via GridStore — never the network. The app feeds them (local echo, or CloudKit
-//  pushes/fetches writing received drawings) and calls reloadAllTimelines.
+//  pushes/fetches writing received drawings) and reloads the affected kind.
 //
 
 import AppIntents
@@ -125,7 +125,7 @@ struct DotGridWidgetView: View {
     }
 }
 
-// MARK: - Default widget: latest from any friend
+// MARK: - Default widget: latest sent or received dotdot
 
 struct LatestProvider: TimelineProvider {
     func placeholder(in context: Context) -> DotGridEntry {
@@ -166,7 +166,7 @@ struct DotGridWidget: Widget {
             DotGridWidgetView(drawing: entry.drawing)
         }
         .configurationDisplayName("dotdot")
-        .description("the latest drawing from a friend.")
+        .description("your latest sent or received dotdot.")
         .supportedFamilies([.systemSmall, .systemLarge])
         .contentMarginsDisabled()   // let photos bleed to the widget edges
     }
