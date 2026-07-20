@@ -91,18 +91,52 @@ struct GridStore {
 
     // MARK: - Inbox history (received + sent feeds)
 
-    /// Newest-first list of dotdots received from friends.
+    /// Newest-first list of dotdots received from friends. Twins are healed on
+    /// read: the app's fetch and the notification service extension are two
+    /// PROCESSES racing read-modify-write on this array, so the prepend-time
+    /// check can miss a copy the other process hadn't flushed yet. Duplicate
+    /// rows also collide in the inbox feed's ForEach identity, which makes
+    /// LazyVStack render ghost copies and blank-until-scrolled cards.
     func receivedHistory() -> [DisplayDrawing] {
-        decode([DisplayDrawing].self, forKey: Self.receivedHistoryKey) ?? []
+        let stored = decode([DisplayDrawing].self, forKey: Self.receivedHistoryKey) ?? []
+        let cleaned = Self.dedupingReceived(stored)
+        if cleaned.count != stored.count {
+            encode(cleaned, forKey: Self.receivedHistoryKey)   // heal once, stay clean
+        }
+        return cleaned
+    }
+
+    /// Collapse twins — same messageID, or same sender + exact sentAt (the
+    /// pre-messageID identity, which also catches a refetched old drawing whose
+    /// stored copy predates messageID). Keeps the first (newest) copy, but never
+    /// loses a reaction stamped on a later twin.
+    nonisolated static func dedupingReceived(_ items: [DisplayDrawing]) -> [DisplayDrawing] {
+        var kept: [DisplayDrawing] = []
+        var indexByMessageID: [String: Int] = [:]
+        var indexBySenderTime: [String: Int] = [:]
+        for item in items {
+            let timeKey = "\(item.senderID)|\(item.sentAt.timeIntervalSinceReferenceDate)"
+            let twin = item.messageID.flatMap { indexByMessageID[$0] } ?? indexBySenderTime[timeKey]
+            if let twin {
+                if kept[twin].myReaction == nil { kept[twin].myReaction = item.myReaction }
+                continue
+            }
+            if let messageID = item.messageID { indexByMessageID[messageID] = kept.count }
+            indexBySenderTime[timeKey] = kept.count
+            kept.append(item)
+        }
+        return kept
     }
 
     private func prependReceivedHistory(_ drawing: DisplayDrawing) {
         var items = receivedHistory()
         // Idempotent: the notification service extension AND the app's fetch paths
         // can both deliver the same record — the second arrival is a no-op (which
-        // also preserves any reaction already attached locally).
+        // also preserves any reaction already attached locally). Matched by
+        // messageID OR sender+time, so a stored copy that predates messageID
+        // still counts as the same drawing.
         let duplicate = items.contains { existing in
-            if let messageID = drawing.messageID { return existing.messageID == messageID }
+            if let messageID = drawing.messageID, existing.messageID == messageID { return true }
             return existing.senderID == drawing.senderID && existing.sentAt == drawing.sentAt
         }
         guard !duplicate else { return }

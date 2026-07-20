@@ -232,16 +232,17 @@ struct InboxView: View {
     // MARK: Feed (one tab at a time)
 
     private var entries: [InboxEntry] {
+        let mapped: [InboxEntry]
         switch tab {
         case .received:
-            return received.map { d in
+            mapped = received.map { d in
                 InboxEntry(
                     id: "r-\(d.senderID)-\(d.sentAt.timeIntervalSince1970)",
                     drawing: d, token: d.token, title: d.senderName
                 )
             }
         case .sent:
-            return sent.map { m in
+            mapped = sent.map { m in
                 let token = m.recipients.first?.token ?? m.drawing.token
                 let title: String
                 if m.recipients.isEmpty {
@@ -255,6 +256,11 @@ struct InboxView: View {
                                   reactions: m.reactions, sendStatus: m.status, messageID: m.id)
             }
         }
+        // The feed's ForEach must never see a colliding id: duplicate ids make
+        // LazyVStack render ghost copies and cards that blank out mid-scroll.
+        // The store heals its own duplicates; this guards any future writer.
+        var seen = Set<String>()
+        return mapped.filter { seen.insert($0.id).inserted }
     }
 
     private var feed: some View {
