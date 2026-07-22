@@ -13,6 +13,71 @@ import XCTest
 final class DebugPanelUITests: XCTestCase {
 
     @MainActor
+    func testSignedOutFriendsKeepsICloudNote() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let addFriend = app.buttons["add a friend"]
+        XCTAssertTrue(addFriend.waitForExistence(timeout: 10), "signed-out launch did not reach the composer")
+        addFriend.tap()
+
+        let iCloudNote = app.buttons.matching(
+            NSPredicate(format: "label CONTAINS 'sign into icloud to send & receive'")
+        ).firstMatch
+        XCTAssertTrue(iCloudNote.waitForExistence(timeout: 5), "persistent iCloud note missing from friends")
+    }
+
+    @MainActor
+    func testSimulateOnboardingFromDebugPanel() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        let badge = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == 'profile' OR label == 'settings'")
+        ).firstMatch
+        XCTAssertTrue(badge.waitForExistence(timeout: 10), "profile badge missing from top bar")
+        badge.press(forDuration: 1.0)
+
+        let simulate = app.buttons["Simulate onboarding"]
+        XCTAssertTrue(simulate.waitForExistence(timeout: 5), "simulate onboarding action missing")
+        simulate.tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+
+        let introCTA = app.buttons["see dotdot in action"]
+        XCTAssertTrue(introCTA.waitForExistence(timeout: 5), "onboarding replay did not reach the introduction")
+        XCTAssertTrue(introCTA.isHittable, "tap-anywhere did not fast-forward the introduction")
+        let hittableCTA = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"),
+            object: introCTA
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [hittableCTA], timeout: 5), .completed)
+        introCTA.tap()
+
+        let modesCTA = app.buttons["make dotdot mine"]
+        XCTAssertTrue(modesCTA.waitForExistence(timeout: 5), "onboarding replay did not reach the modes step")
+        modesCTA.tap()
+
+        let nameField = app.textFields["your name"]
+        XCTAssertTrue(nameField.waitForExistence(timeout: 5), "onboarding replay did not reach identity")
+        nameField.tap()
+        nameField.typeText("debug")
+        let identityCTA = app.buttons["that’s me"]
+        XCTAssertTrue(identityCTA.waitForExistence(timeout: 5), "identity action missing")
+        identityCTA.tap()
+
+        let solo = app.buttons["try it with myself first"]
+        if !solo.waitForExistence(timeout: 2) { app.swipeUp() }
+        XCTAssertTrue(solo.waitForExistence(timeout: 5), "signed-out replay could not continue solo")
+        solo.tap()
+
+        let skipWidget = app.buttons["i’ll do it later"]
+        XCTAssertTrue(skipWidget.waitForExistence(timeout: 5), "onboarding replay did not reach widget education")
+        skipWidget.tap()
+
+        XCTAssertTrue(app.buttons["add a friend"].waitForExistence(timeout: 5), "finishing the replay did not restore the composer")
+    }
+
+    @MainActor
     func testWidgetPreviewPickerFromDebugPanel() throws {
         let app = XCUIApplication()
         app.launch()

@@ -81,6 +81,20 @@ struct DebugView: View {
                         row("Profile", "none (not onboarded / signed out)")
                     }
                 }
+                Section("Onboarding") {
+                    Button {
+                        dismiss()
+                        Task { @MainActor in
+                            await Task.yield()
+                            appModel.simulateOnboarding()
+                        }
+                    } label: {
+                        Label("Simulate onboarding", systemImage: "rectangle.stack.badge.play")
+                    }
+                    Text("Runs the complete first-time flow without changing your profile or saved onboarding progress. Finishing returns you to the app.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Friends (\(appModel.friends.count))") {
                     if appModel.friends.isEmpty {
                         Text("No friends yet").foregroundStyle(.secondary)

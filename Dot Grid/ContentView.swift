@@ -37,6 +37,9 @@ struct ContentView: View {
 
     @State private var showRecipientPicker = false
 
+    @State private var coachProgress = ComposerCoachStore().load()
+    private let coachStore = ComposerCoachStore()
+
     @Environment(AppModel.self) private var appModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -140,6 +143,7 @@ struct ContentView: View {
             withAnimation(placementAnimation) {
                 grid.cells[index] = Cell(colorIndex: selectedColorIndex, size: selectedSize)
             }
+            noteDotPlacedForCoach()
             paintHaptic.impactOccurred()
             paintHaptic.prepare()
             if !strokeRippled {        // one ring per stroke, not per cell
@@ -170,11 +174,17 @@ struct ContentView: View {
 
     private var metadataRow: some View {
         HStack {
-            Text("\(grid.side)×\(grid.side) CANVAS").metaLabel()
+            if coachProgress.stage == .draw {
+                coachHint("drag across the grid.")
+                    .transition(.opacity)
+            } else {
+                Text("\(grid.side)×\(grid.side) CANVAS").metaLabel()
+            }
             Spacer()
             Text("\(filledCount) \(filledCount == 1 ? "DOT" : "DOTS")").metaLabel()
         }
         .padding(.horizontal, 4)
+        .animation(reduceMotion ? Motion.reduced : Motion.surface, value: coachProgress.stage)
     }
 
     private var controls: some View {
@@ -441,6 +451,7 @@ struct ContentView: View {
     /// and play the existing send feedback (haptic, morph, dot hop).
     private func finalizeSend(to recipients: [String]) {
         appModel.send(.dots(grid), to: recipients)
+        noteSentForCoach()
         sendHaptic.impactOccurred()
         sendHaptic.prepare()
 
@@ -477,6 +488,11 @@ struct ContentView: View {
     /// flow is enabled (and you have friends). Otherwise just the button (sheet flow).
     private var sendArea: some View {
         VStack(spacing: 12) {
+            if coachProgress.stage == .send {
+                coachHint("now send it.")
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .transition(.opacity)
+            }
             if SendFlow.useInlineRecipients && appModel.canPickRecipients {
                 RecipientStrip()
                     .transition(.opacity)
@@ -484,6 +500,29 @@ struct ContentView: View {
             sendButton
         }
         .animation(.easeInOut(duration: 0.2), value: appModel.canPickRecipients)
+        .animation(reduceMotion ? Motion.reduced : Motion.surface, value: coachProgress.stage)
+    }
+
+    private func coachHint(_ copy: String) -> some View {
+        Text(copy)
+            .font(DotFont.ui(13, weight: .bold))
+            .foregroundStyle(.white.opacity(0.72))
+            .padding(.horizontal, 11)
+            .frame(minHeight: 28)
+            .background(Capsule().fill(.white.opacity(0.07)))
+            .accessibilityLabel(copy)
+    }
+
+    private func noteDotPlacedForCoach() {
+        guard coachProgress.stage == .draw else { return }
+        withAnimation(reduceMotion ? Motion.reduced : Motion.surface) { coachProgress.noteDotPlaced() }
+        coachStore.save(coachProgress)
+    }
+
+    private func noteSentForCoach() {
+        guard coachProgress.stage == .send else { return }
+        withAnimation(reduceMotion ? Motion.reduced : Motion.surface) { coachProgress.noteSent() }
+        coachStore.save(coachProgress)
     }
 
     private var sendButton: some View {

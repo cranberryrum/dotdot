@@ -11,6 +11,12 @@ import SwiftUI
 struct Dot_GridApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+#if DEBUG
+        AppStoreCapture.prepareIfNeeded()
+#endif
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

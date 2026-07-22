@@ -8,6 +8,27 @@
 
 import SwiftUI
 
+/// The shared lowercase mark used by launch, onboarding, and the composer. Keeping
+/// one construction prevents the launch bridge from subtly shifting weight/tracking.
+struct DotdotWordmark: View {
+    var size: CGFloat = 32
+    var color: Color = Theme.blue
+
+    static func text(size: CGFloat) -> Text {
+        (
+            Text("dot").font(.custom("HankenGrotesk-MediumItalic", fixedSize: size))
+            + Text("dot").font(.custom("HankenGrotesk-ExtraLightItalic", fixedSize: size))
+        )
+        .tracking(size * -0.08)
+    }
+
+    var body: some View {
+        Self.text(size: size)
+            .foregroundStyle(color)
+            .accessibilityLabel("dotdot")
+    }
+}
+
 /// Polka-dot halftone field: small dots on a 22pt grid, tinted to the surface.
 struct HalftoneField: View {
     var color: Color

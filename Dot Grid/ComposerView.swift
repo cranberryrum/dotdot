@@ -9,7 +9,64 @@
 
 import SwiftUI
 
-enum ComposeMode: String { case dots, photo, doodle }
+enum ComposeMode: String, CaseIterable {
+    case dots, photo, doodle
+
+    var title: String { rawValue }
+    var icon: String {
+        switch self {
+        case .dots: "circle.grid.3x3.fill"
+        case .photo: "photo.fill"
+        case .doodle: "scribble.variable"
+        }
+    }
+}
+
+/// Shared by onboarding and the real composer so the tutorial control behaves like
+/// the thing it is teaching.
+struct ComposeModePicker: View {
+    @Binding var selection: ComposeMode
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var modePill
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(ComposeMode.allCases, id: \.self) { mode in
+                segment(mode)
+            }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
+    }
+
+    private func segment(_ mode: ComposeMode) -> some View {
+        let selected = selection == mode
+        return Button {
+            withAnimation(reduceMotion ? nil : Motion.settle) {
+                selection = mode
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: mode.icon)
+                Text(mode.title)
+            }
+            .font(DotFont.ui(15, weight: .bold))
+            .foregroundStyle(selected ? Theme.ink : .white.opacity(0.5))
+            .frame(maxWidth: .infinity)
+            .frame(height: 38)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Theme.cream)
+                        .matchedGeometryEffect(id: "modePill", in: modePill)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
 
 /// The one sheet that can be up over the composer at a time. A single `.sheet(item:)`
 /// avoids the multiple-`.sheet`-on-one-view presentation glitches.
@@ -26,7 +83,6 @@ struct ComposerView: View {
     @State private var activeSheet: ActiveSheet?
     @State private var shimmerPhase: CGFloat = 1   // 0 = off-screen left, 1 = off-screen right (rest)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var modePill
 
     private var mode: ComposeMode { ComposeMode(rawValue: modeRaw) ?? .dots }
 
@@ -66,7 +122,18 @@ struct ComposerView: View {
             case .notificationPriming: NotificationPrimingSheet()
             }
         }
-        .onAppear { playInboxShimmer() }                                   // cold launch
+        .onAppear {
+            playInboxShimmer()                                             // cold launch
+#if DEBUG
+            if AppStoreCapture.scene == .reactions {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(450))
+                    guard activeSheet == nil else { return }
+                    activeSheet = .inbox
+                }
+            }
+#endif
+        }
         .task { await appModel.notifications.refresh() }                   // live notif status
         .onChange(of: appModel.inboxHasUnread) { _, unread in              // first unread arrives
             if unread { playInboxShimmer() }
@@ -196,11 +263,7 @@ struct ComposerView: View {
     /// Figma spec). Kept as a `Text` so it serves as both the visible mark and the
     /// shimmer's mask, guaranteeing the sheen clips exactly to the letters.
     private var wordmarkText: Text {
-        (
-            Text("dot").font(.custom("HankenGrotesk-MediumItalic", fixedSize: 32))
-            + Text("dot").font(.custom("HankenGrotesk-ExtraLightItalic", fixedSize: 32))
-        )
-        .tracking(-2.56)
+        DotdotWordmark.text(size: 32)
     }
 
     /// Tinted with whatever dot color is currently selected (a tiny easter egg, the
@@ -241,36 +304,11 @@ struct ComposerView: View {
     // MARK: Mode toggle
 
     private var modeToggle: some View {
-        HStack(spacing: 4) {
-            segment(.dots, label: "Dots", icon: "circle.grid.3x3.fill")
-            segment(.photo, label: "Photo", icon: "photo.fill")
-            segment(.doodle, label: "Doodle", icon: "scribble.variable")
-        }
-        .padding(4)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
-    }
-
-    private func segment(_ target: ComposeMode, label: String, icon: String) -> some View {
-        let selected = mode == target
-        return Button {
-            withAnimation(.snappy(duration: 0.25)) { modeRaw = target.rawValue }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                Text(label)
-            }
-            .font(DotFont.ui(15, weight: .bold))
-            .foregroundStyle(selected ? Theme.ink : .white.opacity(0.5))
-            .frame(maxWidth: .infinity)
-            .frame(height: 38)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Theme.cream)
-                        .matchedGeometryEffect(id: "modePill", in: modePill)
-                }
-            }
-        }
-        .buttonStyle(.plain)
+        ComposeModePicker(
+            selection: Binding(
+                get: { mode },
+                set: { modeRaw = $0.rawValue }
+            )
+        )
     }
 }

@@ -123,6 +123,15 @@ private final class DoodleCanvasController: NSObject, ObservableObject, PKCanvas
         bump()
     }
 
+#if DEBUG
+    func installCaptureDrawing(_ drawing: PKDrawing, fillColorIndex: Int?) {
+        canvas.drawing = drawing
+        self.fillColorIndex = fillColorIndex
+        canvas.undoManager?.removeAllActions()
+        bump()
+    }
+#endif
+
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) { bump() }
 
     private func bump() {
@@ -218,7 +227,15 @@ struct DoodleComposerView: View {
         .sheet(isPresented: $showRecipientPicker) {
             RecipientPickerView { recipients in finalizeSend(to: recipients) }
         }
-        .onAppear { paintHaptic.prepare(); fillHaptic.prepare(); sendHaptic.prepare(); applyTool() }
+        .onAppear {
+            paintHaptic.prepare()
+            fillHaptic.prepare()
+            sendHaptic.prepare()
+            applyTool()
+#if DEBUG
+            applyAppStoreCaptureIfNeeded()
+#endif
+        }
         .onChange(of: brushStyle) { _, _ in applyTool() }
         .onChange(of: brush) { _, _ in applyTool() }
         .onChange(of: isErasing) { _, _ in applyTool() }
@@ -242,6 +259,24 @@ struct DoodleComposerView: View {
     private func applyTool() {
         canvas.applyTool(style: brushStyle, brush: brush, colorIndex: selectedColorIndex, erasing: isErasing)
     }
+
+#if DEBUG
+    private func applyAppStoreCaptureIfNeeded() {
+        guard AppStoreCapture.scene == .doodle, canvas.isEmpty else { return }
+        selectedColorIndex = 2
+        brushStyle = .crayon
+        brush = .thick
+        canvas.installCaptureDrawing(AppStoreCapture.doodleDrawing(side: 340), fillColorIndex: 7)
+        caption = CaptionOverlay(
+            text: "made for you",
+            position: CGPoint(x: 0.5, y: 0.18),
+            colorIndex: 3,
+            size: .small,
+            alignment: .center
+        )
+        applyTool()
+    }
+#endif
 
     private func startCaption() {
         if caption == nil { caption = CaptionOverlay(text: "", colorIndex: selectedColorIndex) }

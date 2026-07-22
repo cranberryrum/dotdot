@@ -165,8 +165,9 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         _ = GridStore.shared.saveReceived(drawing)   // idempotent vs the app's own fetch
         GridStore.shared.finishIncomingRecordName(recordName)
-        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.widgetKind)
-        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.friendWidgetKind)
+        // Refresh every installed instance (both configurations and both sizes).
+        // WidgetKit may schedule different families independently.
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func ingestReaction(recordID: CKRecord.ID?) async {

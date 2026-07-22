@@ -96,27 +96,28 @@ struct ReceivedHistoryDedupeTests {
 
     // MARK: Default widget projection
 
-    @Test func newerLocalSendWinsEvenWhenAReceivedDrawingExists() {
-        // Even with a badly slow device clock, the local projection was updated
-        // after the received projection, so the send must appear immediately.
-        let received = drawing(at: 1_000, serverAt: 10_000)
-        let local = drawing(sender: "", at: 100)
-        let selected = GridStore.latestDisplayDrawing(
-            received: received, local: local,
-            receivedStoredAt: Date(timeIntervalSinceReferenceDate: 2_000),
-            localStoredAt: Date(timeIntervalSinceReferenceDate: 3_000))
-        #expect(selected?.sentAt == local.sentAt)
+    @Test func defaultWidgetIsEmptyUntilAFriendSends() {
+        #expect(GridStore.defaultWidgetDrawing(received: nil) == nil)
     }
 
-    @Test func newerReceivedDrawingWinsUsingItsServerTime() {
+    @Test func defaultWidgetShowsTheReceivedProjection() {
         let received = drawing(at: 100, serverAt: 3_000, recordName: "received-newer")
-        let local = drawing(sender: "", at: 2_000)
-        let selected = GridStore.latestDisplayDrawing(
-            received: received, local: local,
-            receivedStoredAt: Date(timeIntervalSinceReferenceDate: 4_000),
-            localStoredAt: Date(timeIntervalSinceReferenceDate: 3_000))
+        let selected = GridStore.defaultWidgetDrawing(received: received)
         #expect(selected?.recordName == "received-newer")
         #expect(selected?.senderID == "f1")
+    }
+
+    @Test func widgetProjectionUsesServerClockInsteadOfSenderClock() {
+        let senderClockLooksNew = drawing(at: 50_000, serverAt: 1_000, recordName: "older")
+        let serverNewer = drawing(at: 100, serverAt: 2_000, recordName: "newer")
+        #expect(GridStore.newestForWidget(in: [senderClockLooksNew, serverNewer])?.recordName == "newer")
+    }
+
+    @Test func widgetProjectionBreaksEqualServerTimesByRecordIdentity() {
+        let first = drawing(at: 100, serverAt: 2_000, recordName: "drawing-a")
+        let second = drawing(at: 100, serverAt: 2_000, recordName: "drawing-b")
+        #expect(GridStore.newestForWidget(in: [first, second])?.recordName == "drawing-b")
+        #expect(GridStore.prefersForWidget(second, over: first))
     }
 
     @Test func senderTimeKeyMatchesAcrossConstructions() {

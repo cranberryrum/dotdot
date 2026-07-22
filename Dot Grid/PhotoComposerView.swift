@@ -111,7 +111,14 @@ struct PhotoComposerView: View {
                 RecipientPickerView { recipients in finalizeSend(to: recipients) }
             }
         }
-        .onAppear { sendHaptic.prepare(); pageHaptic.prepare(); syncCamera() }
+        .onAppear {
+            sendHaptic.prepare()
+            pageHaptic.prepare()
+#if DEBUG
+            applyAppStoreCaptureIfNeeded()
+#endif
+            syncCamera()
+        }
         // The live camera runs only while the Photo tab is frontmost and there's no
         // captured/picked shot to frame — and never while backgrounded.
         .onChange(of: isActive) { _, active in
@@ -1142,6 +1149,35 @@ struct PhotoComposerView: View {
         }
         nudgeDoodleHint()
     }
+
+#if DEBUG
+    /// Installs a polished, rights-safe dual-shot state into the real composer.
+    /// The assets live only in the simulator's capture container; this path never ships.
+    private func applyAppStoreCaptureIfNeeded() {
+        guard AppStoreCapture.scene == .photo,
+              image == nil,
+              let main = AppStoreCapture.mainPhoto else { return }
+
+        image = main.normalizedUp()
+        pipImage = AppStoreCapture.selfiePhoto?.normalizedUp()
+        pipCorner = .bottomTrailing
+        pillPage = 2
+        pills[.location] = PhotoSticker(
+            kind: .location,
+            icon: StickerKind.location.defaultIcon,
+            text: "bandra, mumbai",
+            position: CGPoint(x: 0.33, y: 0.84)
+        )
+        caption = CaptionOverlay(
+            text: "same time tomorrow?",
+            position: CGPoint(x: 0.5, y: 0.14),
+            colorIndex: 4,
+            size: .large,
+            alignment: .center
+        )
+        hasSent = false
+    }
+#endif
 
     /// Fire the first-run doodle nudge for the first `doodleHintBudget` photos, then
     /// stop — unless the debug "replay first-time hints" toggle is on, which plays it

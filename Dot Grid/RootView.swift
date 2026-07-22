@@ -34,10 +34,7 @@ struct RootView: View {
     }
 
     private var loading: some View {
-        ZStack {
-            Palette.screenBackground.ignoresSafeArea()
-            ProgressView().tint(.white.opacity(0.5))
-        }
+        OnboardingLaunchBridge()
     }
 
     @ViewBuilder

@@ -34,6 +34,10 @@ final class AppModel {
     private(set) var friends: [FriendInfo] = []
     private(set) var outbox: [QueuedSend] = []
     private(set) var isOnline = true
+    private(set) var onboardingProgress: OnboardingProgress = .fresh
+    /// A debug-panel replay of onboarding. It is deliberately memory-only so
+    /// walking the flow cannot overwrite a real profile or completion record.
+    private(set) var isSimulatingOnboarding = false
 
     /// The user's current pairing code, persisted per-device and shown until it
     /// expires (6 hours). Reused across app opens so it's always ready to share.
@@ -120,7 +124,10 @@ final class AppModel {
 
     private let service = SharingService.shared
     private let monitor = NWPathMonitor()
+    private let onboardingStore = OnboardingStore()
+    private let composerCoachStore = ComposerCoachStore()
     private var didStart = false
+    @ObservationIgnored private var onboardingSimulationSnapshot: (phase: Phase, progress: OnboardingProgress)?
 
     init() {
         profile = GridStore.shared.loadProfile()
@@ -133,6 +140,16 @@ final class AppModel {
         friends = GridStore.shared.roster()
         outbox = GridStore.shared.loadOutbox()
         lastRecipientIDs = UserDefaults.standard.stringArray(forKey: "lastRecipients") ?? []
+        // This is only an in-memory first guess. The persisted migration runs after
+        // CloudKit profile fetch, so a returning user on a new device is never
+        // misclassified as fresh during the loading frame.
+        onboardingProgress = onboardingStore.resolve(profileExists: profile != nil)
+        if OnboardingDestination.resolve(
+            profileExists: profile != nil,
+            progress: onboardingProgress
+        ) == .composer {
+            phase = .ready
+        }
         inboxHasUnread = computeInboxUnread()   // from cache, so the cold launch knows immediately
     }
 
@@ -187,11 +204,11 @@ final class AppModel {
     /// subscription, incoming drawings, and outbox flush.
     func bootstrap() async {
         await notifications.refresh()   // live notification status, never cached
-        phase = profile == nil ? .loading : .ready
+        if profile == nil { phase = .loading }
         account = await service.accountState()
 
         guard case let .available(userID) = account else {
-            phase = .iCloudUnavailable
+            routeWithoutAvailableAccount()
             return
         }
 
@@ -211,6 +228,9 @@ final class AppModel {
             UserDefaults.standard.removeObject(forKey: Self.inboxSeenKey)
             UserDefaults.standard.removeObject(forKey: Self.subscriptionShapeKey)
             UserDefaults.standard.removeObject(forKey: Self.subscriptionVerifiedAtKey)
+            onboardingStore.reset()
+            composerCoachStore.reset()
+            onboardingProgress = .fresh
             inboxHasUnread = false
             clearInviteCode()
             WidgetCenter.shared.reloadAllTimelines()
@@ -226,7 +246,13 @@ final class AppModel {
             lastError = "Profile fetch: \(error.localizedDescription)"
         }
 
-        phase = profile == nil ? .onboarding : .ready
+        // Explicit v1 migration: no stored onboarding record + an existing profile
+        // means this person used an earlier build and goes straight to the composer.
+        onboardingProgress = onboardingStore.resolveAndPersist(profileExists: profile != nil)
+        phase = OnboardingDestination.resolve(
+            profileExists: profile != nil,
+            progress: onboardingProgress
+        ) == .composer ? .ready : .onboarding
 
         guard profile != nil else { return }   // finish onboarding first
 
@@ -239,6 +265,9 @@ final class AppModel {
 
     /// Lighter refresh when the app returns to the foreground.
     func onForeground() async {
+        // Sheet presentation and sharing can briefly foreground the app during a
+        // debug replay. Keep the temporary route intact until the replay finishes.
+        guard !isSimulatingOnboarding else { return }
         await notifications.refresh()   // user may have changed it in iOS Settings while away
         account = await service.accountState()
         if case let .available(userID) = account, profile != nil {
@@ -252,17 +281,18 @@ final class AppModel {
             await pullIncoming()
             await flushOutbox()
             if inboxHasUnread { inboxShimmerNonce &+= 1 }   // warm open with unread → shimmer
-            // ALWAYS reload here, not just when this pull fetched something: a push may
-            // have fetched + saved while backgrounded (advancing the high-water mark, so
-            // the pull above finds nothing) with ITS reload budget-throttled by iOS —
-            // leaving the widget stale while the inbox has the message. Foreground is
-            // the one moment reloads are effectively free and applied promptly.
-            WidgetCenter.shared.reloadAllTimelines()
         } else if case .available = account, profile == nil {
             await bootstrap()
         } else {
-            phase = .iCloudUnavailable
+            routeWithoutAvailableAccount()
         }
+    }
+
+    /// Pairing needs iCloud, but composing locally does not. Signed-out devices go
+    /// straight to the established local-only app; the Friends screen keeps its
+    /// persistent sign-in note visible until the account becomes available.
+    private func routeWithoutAvailableAccount() {
+        phase = .iCloudUnavailable
     }
 
     var isSignedIn: Bool {
@@ -322,6 +352,10 @@ final class AppModel {
             } catch {
                 lastError = "Incoming fetch: \(error.localizedDescription)"
             }
+            // The extension may already have inserted the row, making both fetches
+            // report no new drawings. Repair from the canonical feed and reload
+            // anyway so a throttled extension reload cannot strand a widget.
+            refreshReceivedWidgets()
         }
         if isReactionPush || unknownOrigin {
             if let reactions = try? await service.fetchReactions(recipientIDs: recipientIDs),
@@ -343,10 +377,15 @@ final class AppModel {
     /// Step 1 of onboarding: create the profile. Stays on the onboarding flow so
     /// step 2 (add a friend) can run before landing in the composer.
     func createProfile(name: String, token: IdentityToken) async throws {
+        if isSimulatingOnboarding {
+            advanceOnboarding(.createdProfile)
+            return
+        }
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
         let saved = try await service.saveMyProfile(userID: userID, name: name, token: token, existing: profile)
         profile = saved
         GridStore.shared.saveProfile(saved)
+        advanceOnboarding(.createdProfile)
         await refreshPushSubscriptions(userID: userID)
         await refreshFriends()
         await pullIncoming()
@@ -358,8 +397,44 @@ final class AppModel {
         try await createProfile(name: name, token: token)
     }
 
-    /// Step 2 done (added a friend or skipped) → land in the composer.
-    func markReady() { phase = .ready }
+    /// The UI sends semantic actions; this is the one place that persists progress
+    /// and performs the final route into the real composer.
+    func advanceOnboarding(_ action: OnboardingAction) {
+        let previous = onboardingProgress
+        onboardingProgress.apply(action)
+        guard onboardingProgress != previous else { return }
+
+        if isSimulatingOnboarding {
+            if onboardingProgress.isComplete { finishOnboardingSimulation() }
+            return
+        }
+
+        onboardingStore.save(onboardingProgress)
+        if onboardingProgress.isComplete {
+            composerCoachStore.begin()
+            phase = .ready
+        }
+    }
+
+    /// Starts the complete first-run experience without touching the persisted
+    /// checkpoint or CloudKit profile. Completion returns to the exact route and
+    /// progress that were active when the debug panel launched it.
+    func simulateOnboarding() {
+        guard !isSimulatingOnboarding else { return }
+        onboardingSimulationSnapshot = (phase, onboardingProgress)
+        isSimulatingOnboarding = true
+        onboardingProgress = .fresh
+        phase = .onboarding
+    }
+
+    private func finishOnboardingSimulation() {
+        let snapshot = onboardingSimulationSnapshot
+        onboardingSimulationSnapshot = nil
+        isSimulatingOnboarding = false
+        onboardingProgress = snapshot?.progress
+            ?? onboardingStore.resolve(profileExists: profile != nil)
+        phase = snapshot?.phase ?? (isSignedIn ? .ready : .iCloudUnavailable)
+    }
 
     // MARK: - Delete my data
 
@@ -380,6 +455,9 @@ final class AppModel {
                     Self.subscriptionVerifiedAtKey] {
             defaults.removeObject(forKey: key)
         }
+        onboardingStore.reset()
+        composerCoachStore.reset()
+        onboardingProgress = .fresh
         clearInviteCode()
         profile = nil
         friends = []
@@ -547,7 +625,7 @@ final class AppModel {
         case doodle(Data)
     }
 
-    /// Persist locally FIRST (canvas + widget echo + queue), then push to CloudKit.
+    /// Persist locally FIRST (canvas + sent feed + queue), then push to CloudKit.
     /// A message is never lost to a network hiccup.
     func send(_ payload: ComposePayload, to recipientIDs: [String]) {
         let token = profile?.token ?? .placeholder
@@ -564,8 +642,6 @@ final class AppModel {
         case .doodle(let data):
             echo = .doodle(data, senderID: "", senderName: name, token: token, sentAt: now)
         }
-        GridStore.shared.saveLocalEcho(echo)
-
         // Record it in the inbox's "sent" feed. Resolve recipients to friends for
         // their token/name; an unknown id (rare) falls back to a placeholder. An
         // empty list means a local-only send (no friends picked).
@@ -581,7 +657,6 @@ final class AppModel {
         GridStore.shared.appendSent(SentMessage(id: messageID, drawing: echo, recipients: recipients,
                                                 status: willDeliver ? .sending : .localOnly))
         deliveryRevision &+= 1
-        reloadDefaultWidget()
 
         guard let profile, !recipientIDs.isEmpty else { return }   // local-only send
 
@@ -821,7 +896,7 @@ final class AppModel {
 
         GridStore.shared.applyMyReaction(newValue, senderID: drawing.senderID, sentAt: drawing.sentAt)
         deliveryRevision &+= 1
-        reloadReceivedWidgets()   // the emoji sticks on the widget
+        refreshReceivedWidgets()   // the emoji sticks on the widget
 
         var queue = loadReactionQueue()
         // A newer op for the same dotdot supersedes any queued one.
@@ -915,6 +990,9 @@ final class AppModel {
         } catch {
             lastError = "Incoming fetch: \(error.localizedDescription)"
         }
+        // Always reconcile/reload, even if the extension saved the drawing first,
+        // this fetch found no new rows, or the network reconciliation just failed.
+        refreshReceivedWidgets()
         // Reactions to dotdots I sent (updates the sent feed; no widget content).
         if let reactions = try? await service.fetchReactions(
             recipientIDs: incomingRecipientIDs(for: userID)), !reactions.isEmpty {
@@ -928,7 +1006,6 @@ final class AppModel {
     private func landIncoming(_ drawings: [DisplayDrawing]) -> Bool {
         guard !drawings.isEmpty else { return false }
         refreshInboxUnread()
-        reloadReceivedWidgets()
         deliveryRevision &+= 1
         if inboxHasUnread { inboxShimmerNonce &+= 1 }
         notifications.noteReceivedFromFriend()
@@ -936,13 +1013,12 @@ final class AppModel {
         return true
     }
 
-    private func reloadDefaultWidget() {
-        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.widgetKind)
-    }
-
-    private func reloadReceivedWidgets() {
-        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.widgetKind)
-        WidgetCenter.shared.reloadTimelines(ofKind: GridStore.friendWidgetKind)
+    private func refreshReceivedWidgets() {
+        _ = GridStore.shared.repairReceivedWidgetProjections()
+        // There are only two widget configurations. Reload every instance so both
+        // small and large families, including restored configurations, re-read the
+        // same repaired App Group projection.
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func participantID(for userID: String) -> String {

@@ -21,7 +21,7 @@ struct GridStore {
     // MARK: - Keys
 
     private static let canvasKey = "currentGrid"        // composer's last canvas
-    private static let localEchoKey = "localEcho"       // your own last send (fallback display)
+    private static let localEchoKey = "localEcho"       // legacy key retained for upgrade/reset compatibility
     private static let localEchoUpdatedAtKey = "localEchoUpdatedAt.v2"
     private static let latestReceivedKey = "latestReceived"
     private static let latestReceivedUpdatedAtKey = "latestReceivedUpdatedAt.v2"
@@ -49,9 +49,8 @@ struct GridStore {
 
     // MARK: - Widget display
 
-    /// Your own outgoing message, shown on your widget until a friend sends one.
-    /// `senderID` is empty so the widget shows no "from" badge on your own work.
-    /// Works without a profile, so the local loop is solid even before iCloud.
+    /// Legacy writer retained for stored-state compatibility. Live sends no longer
+    /// call this because widgets intentionally show received friend content only.
     func saveLocalEcho(_ drawing: DisplayDrawing) {
         encode(drawing, forKey: Self.localEchoKey)
         defaults?.set(Date(), forKey: Self.localEchoUpdatedAtKey)
@@ -66,7 +65,7 @@ struct GridStore {
         let inserted = insertReceivedHistory(drawing)
 
         if let current = decode(DisplayDrawing.self, forKey: Self.friendDisplayKey(drawing.senderID)) {
-            if current.orderingDate < drawing.orderingDate {
+            if Self.prefersForWidget(drawing, over: current) {
                 encode(drawing, forKey: Self.friendDisplayKey(drawing.senderID))
             }
         } else {
@@ -74,7 +73,7 @@ struct GridStore {
         }
 
         if let current = decode(DisplayDrawing.self, forKey: Self.latestReceivedKey) {
-            if current.orderingDate < drawing.orderingDate {
+            if Self.prefersForWidget(drawing, over: current) {
                 encode(drawing, forKey: Self.latestReceivedKey)
                 defaults?.set(Date(), forKey: Self.latestReceivedUpdatedAtKey)
             }
@@ -97,39 +96,79 @@ struct GridStore {
         defaults?.object(forKey: Self.latestReceivedIngestedAtKey) as? Date
     }
 
-    /// Pick the latest activity in either direction. Previously any received
-    /// drawing permanently shadowed newer local sends, which is why the default
-    /// widget often appeared stuck on an old friend dotdot after sending.
-    func latestDisplayDrawing() -> DisplayDrawing? {
-        Self.latestDisplayDrawing(
-            received: decode(DisplayDrawing.self, forKey: Self.latestReceivedKey),
-            local: decode(DisplayDrawing.self, forKey: Self.localEchoKey),
-            receivedStoredAt: defaults?.object(forKey: Self.latestReceivedUpdatedAtKey) as? Date,
-            localStoredAt: defaults?.object(forKey: Self.localEchoUpdatedAtKey) as? Date
+    /// What every unconfigured/default widget shows: the newest dotdot received
+    /// from a friend. Outgoing local echoes intentionally never participate.
+    func latestReceivedDrawing() -> DisplayDrawing? {
+        Self.defaultWidgetDrawing(
+            received: decode(DisplayDrawing.self, forKey: Self.latestReceivedKey)
         )
     }
 
-    nonisolated static func latestDisplayDrawing(
-        received: DisplayDrawing?, local: DisplayDrawing?,
-        receivedStoredAt: Date? = nil, localStoredAt: Date? = nil
-    ) -> DisplayDrawing? {
-        switch (received, local) {
-        case let (received?, local?):
-            // These timestamps share this device's clock domain and mean "when did
-            // this projection change?" A just-sent local echo therefore wins even
-            // when the phone clock disagrees with CloudKit's server clock. A single
-            // non-nil value means that side changed after this key shipped.
-            switch (receivedStoredAt, localStoredAt) {
-            case let (receivedAt?, localAt?): return localAt >= receivedAt ? local : received
-            case (.some, nil): return received
-            case (nil, .some): return local
-            case (nil, nil): break   // upgrade fallback for two legacy slots
-            }
-            return local.orderingDate >= received.orderingDate ? local : received
-        case let (received?, nil): return received
-        case let (nil, local?): return local
-        case (nil, nil): return nil
+    nonisolated static func defaultWidgetDrawing(received: DisplayDrawing?) -> DisplayDrawing? {
+        received
+    }
+
+    /// A total ordering for widget projections. CloudKit creation dates can tie,
+    /// so record/message identity breaks the tie deterministically instead of a
+    /// strict date comparison leaving one widget family on an older record.
+    nonisolated static func prefersForWidget(_ candidate: DisplayDrawing,
+                                             over current: DisplayDrawing) -> Bool {
+        if candidate.orderingDate != current.orderingDate {
+            return candidate.orderingDate > current.orderingDate
         }
+        return widgetIdentity(candidate) > widgetIdentity(current)
+    }
+
+    private nonisolated static func widgetIdentity(_ drawing: DisplayDrawing) -> String {
+        drawing.recordName
+            ?? drawing.messageID
+            ?? senderTimeKey(senderID: drawing.senderID, sentAt: drawing.sentAt)
+    }
+
+    nonisolated static func newestForWidget(in drawings: [DisplayDrawing]) -> DisplayDrawing? {
+        drawings.reduce(nil) { current, candidate in
+            guard let current else { return candidate }
+            return prefersForWidget(candidate, over: current) ? candidate : current
+        }
+    }
+
+    /// Repair the lightweight widget slots from the canonical received feed.
+    /// This closes the app/notification-extension race where the history write
+    /// succeeds but a process is suspended before its projection/reload finishes.
+    /// Callers run this in the app before asking WidgetKit for fresh timelines;
+    /// the widget itself stays cheap and decodes only one drawing.
+    @discardableResult
+    func repairReceivedWidgetProjections() -> Bool {
+        let history = receivedHistory()
+        guard !history.isEmpty else { return false }
+
+        var changed = false
+        if let newest = Self.newestForWidget(in: history) {
+            let current = decode(DisplayDrawing.self, forKey: Self.latestReceivedKey)
+            if current.map({ Self.prefersForWidget(newest, over: $0) }) ?? true {
+                encode(newest, forKey: Self.latestReceivedKey)
+                defaults?.set(Date(), forKey: Self.latestReceivedUpdatedAtKey)
+                changed = true
+            }
+        }
+
+        var newestBySender: [String: DisplayDrawing] = [:]
+        for drawing in history {
+            if let current = newestBySender[drawing.senderID],
+               !Self.prefersForWidget(drawing, over: current) {
+                continue
+            }
+            newestBySender[drawing.senderID] = drawing
+        }
+        for (senderID, newest) in newestBySender {
+            let key = Self.friendDisplayKey(senderID)
+            let current = decode(DisplayDrawing.self, forKey: key)
+            if current.map({ Self.prefersForWidget(newest, over: $0) }) ?? true {
+                encode(newest, forKey: key)
+                changed = true
+            }
+        }
+        return changed
     }
 
     /// What a pinned per-friend widget shows.
@@ -418,6 +457,25 @@ struct GridStore {
         }
         encode(override, forKey: Self.debugWidgetOverrideKey)
     }
+
+#if DEBUG
+    /// Exact, idempotent histories for simulator marketing captures. Unlike the
+    /// append APIs, repeated launches cannot accumulate duplicate cards.
+    func setCaptureHistories(received: [DisplayDrawing], sent: [SentMessage]) {
+        encode(Array(received.prefix(Self.historyLimit)), forKey: Self.receivedHistoryKey)
+        encode(Array(sent.prefix(Self.historyLimit)), forKey: Self.sentHistoryKey)
+        if let newest = received.first {
+            encode(newest, forKey: Self.latestReceivedKey)
+            encode(newest, forKey: Self.friendDisplayKey(newest.senderID))
+            defaults?.set(Date(), forKey: Self.latestReceivedUpdatedAtKey)
+            defaults?.set(Date(), forKey: Self.latestReceivedIngestedAtKey)
+        } else {
+            defaults?.removeObject(forKey: Self.latestReceivedKey)
+            defaults?.removeObject(forKey: Self.latestReceivedUpdatedAtKey)
+            defaults?.removeObject(forKey: Self.latestReceivedIngestedAtKey)
+        }
+    }
+#endif
 
     // MARK: - Reset (iCloud account switch starts fresh)
 

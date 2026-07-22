@@ -10,12 +10,19 @@
 import SwiftUI
 import UIKit
 
+enum PairingOutcome: Equatable {
+    case connected
+    case solo
+}
+
 struct AddFriendView: View {
     @Environment(AppModel.self) private var appModel
 
-    /// Called when used inside onboarding ("continue"). Nil when shown as a sheet.
-    var onDone: (() -> Void)?
+    /// Present only during onboarding. The view still uses AppModel's real pairing
+    /// methods; this closure reports which legitimate continuation the user chose.
+    var onDone: ((PairingOutcome) -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum PairTab: String, CaseIterable {
         case add, share
@@ -29,6 +36,7 @@ struct AddFriendView: View {
     @State private var connecting = false
     @State private var resultText: String?
     @State private var resultIsError = false
+    @State private var didConnect = false
 
     // Your code (the persistent code lives on AppModel)
     @State private var refreshingCode = false
@@ -42,9 +50,10 @@ struct AddFriendView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if onDone != nil { onboardingHeader }
                 if !appModel.isSignedIn { iCloudBanner }
                 pairCard
-                friendsCard
+                if onDone == nil || !appModel.friends.isEmpty { friendsCard }
                 doneButton
             }
             .padding(20)
@@ -55,6 +64,7 @@ struct AddFriendView: View {
         .preferredColorScheme(.dark)
         .task {
             await appModel.reloadFriends()
+            if !appModel.friends.isEmpty { didConnect = true }
             await appModel.loadOrMintCode()
         }
         .alert(
@@ -68,6 +78,15 @@ struct AddFriendView: View {
         } message: { friend in
             Text("you'll stop sending to and receiving from \(friend.name). you can always pair again with a new code.")
         }
+    }
+
+    private var onboardingHeader: some View {
+        OnboardingHeader(
+            title: "who do you want on your home screen?",
+            subtitle: "pair with a friend now, or make your first dotdot just for you."
+        )
+        .padding(.top, 8)
+        .padding(.bottom, 2)
     }
 
     // MARK: - iCloud notice (pairing needs an account; tap retries the check)
@@ -115,9 +134,9 @@ struct AddFriendView: View {
             ForEach(PairTab.allCases, id: \.self) { t in
                 let selected = tab == t
                 Button {
-                    withAnimation(.snappy(duration: 0.22)) { tab = t }
+                    withAnimation(reduceMotion ? nil : Motion.settle) { tab = t }
                 } label: {
-                    Text(t.title)
+                    Text(tabTitle(t))
                         .font(DotFont.ui(14, weight: .bold))
                         .foregroundStyle(selected ? Theme.ink : .white.opacity(0.55))
                         .frame(maxWidth: .infinity)
@@ -131,10 +150,16 @@ struct AddFriendView: View {
                         }
                 }
                 .buttonStyle(.plain)
+                .frame(minHeight: 44)
             }
         }
         .padding(4)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.05)))
+    }
+
+    private func tabTitle(_ tab: PairTab) -> String {
+        guard onDone != nil else { return tab.title }
+        return tab == .add ? "enter their code" : "share my code"
     }
 
     private var enterCodeContent: some View {
@@ -204,7 +229,7 @@ struct AddFriendView: View {
                     Text(refreshingCode ? "refreshing…" : "new code")
                         .font(DotFont.ui(14, weight: .bold))
                         .foregroundStyle(.white.opacity(0.7))
-                        .frame(maxWidth: .infinity).frame(height: 40)
+                        .frame(maxWidth: .infinity).frame(height: 44)
                         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.06)))
                 }
                 .buttonStyle(SquishyButtonStyle())
@@ -292,27 +317,45 @@ struct AddFriendView: View {
     // MARK: - Done
 
     private var doneButton: some View {
-        Button { onDone?() ?? dismiss() } label: {
-            Text(onDone == nil ? "done" : "continue to drawing")
+        Button {
+            if let onDone {
+                onDone(didConnect ? .connected : .solo)
+            } else {
+                dismiss()
+            }
+        } label: {
+            Text(doneButtonTitle)
                 .font(DotFont.ui(16, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(didConnect && onDone != nil ? Theme.ink : .white.opacity(0.72))
                 .frame(maxWidth: .infinity).frame(height: 52)
-                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Palette.boardBackground))
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(didConnect && onDone != nil ? Theme.cream : Palette.boardBackground)
+                )
         }
         .buttonStyle(SquishyButtonStyle())
+    }
+
+    private var doneButtonTitle: String {
+        guard onDone != nil else { return "done" }
+        return didConnect ? "continue with a friend" : "try it with myself first"
     }
 
     // MARK: - Actions
 
     private func connect() async {
         connecting = true
-        withAnimation(Motion.surface) { resultText = nil }
+        withAnimation(adaptiveSurfaceAnimation) { resultText = nil }
         do {
             try await appModel.addFriend(byCode: codeEntry)
-            withAnimation(Motion.surface) { resultText = "connected! 🎉"; resultIsError = false }
+            withAnimation(adaptiveSurfaceAnimation) {
+                resultText = "connected. you’re ready to send."
+                resultIsError = false
+                didConnect = true
+            }
             codeEntry = ""
         } catch {
-            withAnimation(Motion.surface) {
+            withAnimation(adaptiveSurfaceAnimation) {
                 resultText = (error as? PairingError)?.errorDescription ?? "couldn't connect."
                 resultIsError = true
             }
@@ -325,19 +368,19 @@ struct AddFriendView: View {
         copied = false
         let ok = await appModel.mintCode()
         if !ok {
-            withAnimation(Motion.surface) { resultText = "couldn't make a code."; resultIsError = true }
+            withAnimation(adaptiveSurfaceAnimation) { resultText = "couldn't make a code."; resultIsError = true }
         }
         refreshingCode = false
     }
 
     private func copy(_ code: String) {
         UIPasteboard.general.string = code
-        withAnimation(Motion.settle) { copied = true }
+        withAnimation(reduceMotion ? Motion.reduced : Motion.settle) { copied = true }
         copiedResetTask?.cancel()
         copiedResetTask = Task {
             try? await Task.sleep(for: .seconds(1.6))
             guard !Task.isCancelled else { return }
-            withAnimation(Motion.settle) { copied = false }
+            withAnimation(reduceMotion ? Motion.reduced : Motion.settle) { copied = false }
         }
     }
 
@@ -345,6 +388,10 @@ struct AddFriendView: View {
         removingID = friend.id
         await appModel.removeFriend(friend)
         removingID = nil
+    }
+
+    private var adaptiveSurfaceAnimation: Animation {
+        reduceMotion ? Motion.reduced : Motion.surface
     }
 
     // MARK: - Card chrome

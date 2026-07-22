@@ -54,6 +54,14 @@ struct InboxView: View {
     @State private var scrollTarget: String?   // entry id a notification tap wants visible
     @Namespace private var tabPill
 
+    init() {
+#if DEBUG
+        if AppStoreCapture.scene == .reactions {
+            _tab = State(initialValue: .sent)
+        }
+#endif
+    }
+
     var body: some View {
         ZStack {
             Palette.screenBackground.ignoresSafeArea()
@@ -91,6 +99,9 @@ struct InboxView: View {
     }
 
     private var shouldShowNotificationNudge: Bool {
+#if DEBUG
+        if AppStoreCapture.scene == .reactions { return false }
+#endif
         return appModel.notifications.shouldShowFeedNudge
     }
 

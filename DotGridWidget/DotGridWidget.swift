@@ -125,7 +125,7 @@ struct DotGridWidgetView: View {
     }
 }
 
-// MARK: - Default widget: latest sent or received dotdot
+// MARK: - Default widget: latest dotdot received from any friend
 
 struct LatestProvider: TimelineProvider {
     func placeholder(in context: Context) -> DotGridEntry {
@@ -137,7 +137,7 @@ struct LatestProvider: TimelineProvider {
             completion(DotGridEntry(date: .now, drawing: override.drawing))
             return
         }
-        let stored = GridStore.shared.latestDisplayDrawing()
+        let stored = GridStore.shared.latestReceivedDrawing()
         let drawing = (context.isPreview && stored == nil) ? DisplayDrawing.placeholder(at: .now) : stored
         completion(DotGridEntry(date: .now, drawing: drawing))
     }
@@ -149,7 +149,7 @@ struct LatestProvider: TimelineProvider {
         if let override = GridStore.shared.widgetDebugOverride() {
             drawing = override.drawing
         } else {
-            drawing = GridStore.shared.latestDisplayDrawing()
+            drawing = GridStore.shared.latestReceivedDrawing()
         }
         let entry = DotGridEntry(date: .now, drawing: drawing)
         // The app reloads timelines on send/receive; the widget never fetches. But a
@@ -166,7 +166,7 @@ struct DotGridWidget: Widget {
             DotGridWidgetView(drawing: entry.drawing)
         }
         .configurationDisplayName("dotdot")
-        .description("your latest sent or received dotdot.")
+        .description("the latest dotdot a friend sent you.")
         .supportedFamilies([.systemSmall, .systemLarge])
         .contentMarginsDisabled()   // let photos bleed to the widget edges
     }
@@ -215,7 +215,9 @@ struct FriendProvider: AppIntentTimelineProvider {
     }
 
     func snapshot(for configuration: SelectFriendIntent, in context: Context) async -> DotGridEntry {
-        DotGridEntry(date: .now, drawing: drawing(for: configuration) ?? .placeholder(at: .now))
+        let stored = drawing(for: configuration)
+        let drawing = (context.isPreview && stored == nil) ? DisplayDrawing.placeholder(at: .now) : stored
+        return DotGridEntry(date: .now, drawing: drawing)
     }
 
     func timeline(for configuration: SelectFriendIntent, in context: Context) async -> Timeline<DotGridEntry> {
@@ -227,7 +229,7 @@ struct FriendProvider: AppIntentTimelineProvider {
     private func drawing(for configuration: SelectFriendIntent) -> DisplayDrawing? {
         // Debug override first — same rule as LatestProvider.
         if let override = GridStore.shared.widgetDebugOverride() { return override.drawing }
-        guard let id = configuration.friend?.id else { return GridStore.shared.latestDisplayDrawing() }
+        guard let id = configuration.friend?.id else { return GridStore.shared.latestReceivedDrawing() }
         return GridStore.shared.displayDrawing(forFriend: id)
     }
 }
