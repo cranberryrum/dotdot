@@ -23,7 +23,9 @@ private struct InboxEntry: Identifiable {
     let id: String
     let drawing: DisplayDrawing
     let token: IdentityToken   // sender (received) or first recipient (sent)
-    let title: String          // "alice" (received) · "to alice +2" (sent)
+    var avatarJPEG: Data? = nil
+    let title: String          // "alice" (received) · "to alice & 2 more" (sent)
+    var recipients: [FriendInfo] = []   // sent feed: everyone it went to — backs the full-list sheet
     var reactions: [ReactionInfo] = []   // sent feed: who reacted with what
     var sendStatus: SentMessage.SendStatus?   // sent feed: honest delivery state
     var messageID: String?                    // sent feed: resend target
@@ -157,14 +159,17 @@ struct InboxView: View {
     private func consumePendingRoute() {
         guard let route = appModel.pendingRoute else { return }
         switch route {
-        case .receivedDrawing(let senderID, let sentAt):
+        case .receivedDrawing(let senderID, let sentAt, let messageID):
             tab = .received
             if let drawing = received.first(where: {
-                $0.senderID == senderID && abs($0.sentAt.timeIntervalSince(sentAt)) < 1
+                guard $0.senderID == senderID else { return false }
+                if let messageID { return $0.messageID == messageID }
+                return abs($0.sentAt.timeIntervalSince(sentAt)) < 10
             }) {
                 let entry = InboxEntry(
                     id: "r-\(drawing.senderID)-\(drawing.sentAt.timeIntervalSince1970)",
-                    drawing: drawing, token: drawing.token, title: drawing.senderName
+                    drawing: drawing, token: drawing.token, avatarJPEG: drawing.avatarJPEG,
+                    title: drawing.senderName
                 )
                 withAnimation(Motion.pop) { peek = entry }
                 appModel.pendingRoute = nil
@@ -233,21 +238,20 @@ struct InboxView: View {
             mapped = received.map { d in
                 InboxEntry(
                     id: "r-\(d.senderID)-\(d.sentAt.timeIntervalSince1970)",
-                    drawing: d, token: d.token, title: d.senderName
+                    drawing: d, token: d.token, avatarJPEG: d.avatarJPEG, title: d.senderName
                 )
             }
         case .sent:
             mapped = sent.map { m in
                 let token = m.recipients.first?.token ?? m.drawing.token
-                let title: String
-                if m.recipients.isEmpty {
-                    title = "only you"
-                } else if m.recipients.count == 1 {
-                    title = "to \(m.recipients[0].name)"
-                } else {
-                    title = "to \(m.recipients[0].name) +\(m.recipients.count - 1)"
-                }
-                return InboxEntry(id: "s-\(m.id)", drawing: m.drawing, token: token, title: title,
+                // Only fall back to the sender's (my) avatar for a true local-only
+                // send — a recipient who simply has no photo set must show their own
+                // token, not mine (`?? ` alone can't tell "no recipient" from
+                // "recipient has no avatarJPEG", since both collapse to nil).
+                let avatarJPEG = m.recipients.isEmpty ? m.drawing.avatarJPEG : m.recipients.first?.avatarJPEG
+                return InboxEntry(id: "s-\(m.id)", drawing: m.drawing, token: token,
+                                  avatarJPEG: avatarJPEG, title: sentTitle(for: m.recipients),
+                                  recipients: m.recipients,
                                   reactions: m.reactions, sendStatus: m.status, messageID: m.id)
             }
         }
@@ -256,6 +260,18 @@ struct InboxView: View {
         // The store heals its own duplicates; this guards any future writer.
         var seen = Set<String>()
         return mapped.filter { seen.insert($0.id).inserted }
+    }
+
+    /// Names at least two people before ever collapsing into a count, so a
+    /// two-person send never hides who the second person is — "+N" only ever
+    /// stands for people beyond the first two, and the full list is one tap away.
+    private func sentTitle(for recipients: [FriendInfo]) -> String {
+        switch recipients.count {
+        case 0: "only you"
+        case 1: "to \(recipients[0].name)"
+        case 2: "to \(recipients[0].name) & \(recipients[1].name)"
+        default: "to \(recipients[0].name), \(recipients[1].name) & \(recipients.count - 2) more"
+        }
     }
 
     private var feed: some View {
@@ -350,7 +366,7 @@ struct InboxView: View {
                     )
                     .frame(maxWidth: 330)
                 HStack(spacing: 10) {
-                    TokenBadge(token: entry.token, size: 30)
+                    TokenBadge(token: entry.token, avatarJPEG: entry.avatarJPEG, size: 30)
                     Text(entry.title)
                         .font(DotFont.ui(17, weight: .bold))
                         .foregroundStyle(.white)
@@ -448,6 +464,7 @@ private struct FeedCard: View {
     /// saved/failed flash their icon, then settle back to idle.
     private enum SaveState { case idle, saving, saved, denied, failed }
     @State private var saveState: SaveState = .idle
+    @State private var showRecipients = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -459,16 +476,14 @@ private struct FeedCard: View {
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
                             .strokeBorder(.white.opacity(0.06), lineWidth: 1)
                     )
-                TokenBadge(token: entry.token, size: 34)
+                TokenBadge(token: entry.token, avatarJPEG: entry.avatarJPEG, size: 34)
                     .padding(14)
             }
             .overlay(alignment: .bottomTrailing) {
                 saveChip.padding(14)
             }
             HStack(spacing: 8) {
-                Text(entry.title)
-                    .font(DotFont.ui(16, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.92))
+                titleLabel
                 Spacer()
                 Text(shortRelative(entry.drawing.sentAt))
                     .font(DotFont.mono(12, bold: true))
@@ -487,6 +502,34 @@ private struct FeedCard: View {
                 .padding(.horizontal, 4)
         }
         .onTapIfPresent(onTap)
+        .sheet(isPresented: $showRecipients) {
+            SentRecipientsSheet(recipients: entry.recipients)
+        }
+    }
+
+    /// The sent feed's "to alice & 2 more" line. A group send is tappable — it's
+    /// the full-visibility fix: nobody stays hidden behind a "+N".
+    @ViewBuilder
+    private var titleLabel: some View {
+        Group {
+            if entry.recipients.count > 1 {
+                Button { showRecipients = true } label: {
+                    HStack(spacing: 4) {
+                        Text(entry.title)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                }
+                .buttonStyle(SquishyButtonStyle())
+                .accessibilityLabel("sent to \(entry.recipients.count) people")
+                .accessibilityHint("double tap to see everyone")
+            } else {
+                Text(entry.title)
+            }
+        }
+        .font(DotFont.ui(16, weight: .bold))
+        .foregroundStyle(.white.opacity(0.92))
     }
 
     /// Save-to-gallery, tucked on the artwork like the widget's reaction sticker.
@@ -610,6 +653,51 @@ private struct FeedCard: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Sent recipients (full list, one tap off the sent card)
+
+/// Everyone a dotdot went to — the group-send case's full-visibility view, so
+/// nobody stays hidden behind the card's "& N more".
+private struct SentRecipientsSheet: View {
+    let recipients: [FriendInfo]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(recipients.enumerated()), id: \.element.id) { index, friend in
+                        if index > 0 {
+                            Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
+                        }
+                        HStack(spacing: 12) {
+                            TokenBadge(token: friend.token, avatarJPEG: friend.avatarJPEG, size: 40)
+                            Text(friend.name)
+                                .font(DotFont.ui(16, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .padding(.vertical, 10)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Palette.screenBackground.ignoresSafeArea())
+            .navigationTitle("sent to")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("done") { dismiss() } }
+            }
+        }
+        .font(DotFont.ui(17))
+        .textCase(.lowercase)
+        .preferredColorScheme(.dark)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Palette.screenBackground)
     }
 }
 
