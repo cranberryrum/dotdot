@@ -114,7 +114,8 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
             if subscriptionID?.hasPrefix("drawings-to-") == true,
                let senderID = fields["senderID"] as? String,
                let sentAt = fields["sentAt"] as? Date {
-                route = .receivedDrawing(senderID: senderID, sentAt: sentAt)
+                route = .receivedDrawing(senderID: senderID, sentAt: sentAt,
+                                          messageID: fields["messageID"] as? String)
             } else if subscriptionID?.hasPrefix("reactions-to-") == true,
                       let messageID = fields["messageID"] as? String {
                 route = .sentDrawing(messageID: messageID)
@@ -125,7 +126,8 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         if route == nil, subscriptionID?.hasPrefix("drawings-to-") == true,
            let recordName = recordID?.recordName,
            let drawing = GridStore.shared.receivedHistory().first(where: { $0.recordName == recordName }) {
-            route = .receivedDrawing(senderID: drawing.senderID, sentAt: drawing.sentAt)
+            route = .receivedDrawing(senderID: drawing.senderID, sentAt: drawing.sentAt,
+                                      messageID: drawing.messageID)
         }
         guard let route else { return }
         await MainActor.run { AppModel.shared.pendingRoute = route }

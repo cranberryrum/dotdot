@@ -21,19 +21,23 @@ enum NotificationDeliveryKey {
 /// that drawing, a connected push opens that friend, a reaction echo opens the
 /// reacted-to drawing in sent.
 enum NotificationRoute: Equatable {
-    case receivedDrawing(senderID: String, sentAt: Date)
+    case receivedDrawing(senderID: String, sentAt: Date, messageID: String?)
     case friend(id: String)
     case sentDrawing(messageID: String)
 
     var userInfo: [String: Any] {
         switch self {
-        case .receivedDrawing(let senderID, let sentAt):
-            ["route": "received", "senderID": senderID,
-             "sentAt": sentAt.timeIntervalSinceReferenceDate]
+        case .receivedDrawing(let senderID, let sentAt, let messageID):
+            var info: [String: Any] = [
+                "route": "received", "senderID": senderID,
+                "sentAt": sentAt.timeIntervalSinceReferenceDate
+            ]
+            if let messageID { info["messageID"] = messageID }
+            return info
         case .friend(let id):
-            ["route": "friend", "id": id]
+            return ["route": "friend", "id": id]
         case .sentDrawing(let messageID):
-            ["route": "sent", "messageID": messageID]
+            return ["route": "sent", "messageID": messageID]
         }
     }
 
@@ -43,7 +47,8 @@ enum NotificationRoute: Equatable {
             guard let senderID = userInfo["senderID"] as? String,
                   let interval = userInfo["sentAt"] as? TimeInterval else { return nil }
             self = .receivedDrawing(senderID: senderID,
-                                    sentAt: Date(timeIntervalSinceReferenceDate: interval))
+                                    sentAt: Date(timeIntervalSinceReferenceDate: interval),
+                                    messageID: userInfo["messageID"] as? String)
         case "friend":
             guard let id = userInfo["id"] as? String else { return nil }
             self = .friend(id: id)

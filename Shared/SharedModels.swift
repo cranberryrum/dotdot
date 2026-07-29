@@ -23,11 +23,30 @@ struct IdentityToken: Codable, Equatable, Hashable {
 }
 
 /// The local user's identity. `id` is the CloudKit user record name, so it
-/// follows the iCloud account across devices. No personal data beyond a name.
+/// follows the iCloud account across devices. No personal data beyond a name
+/// and an optional downscaled avatar JPEG.
 struct Profile: Codable, Equatable {
     var id: String
     var name: String
     var token: IdentityToken
+    /// Tiny center-cropped JPEG (~256px). Optional — token badge is the fallback.
+    var avatarJPEG: Data? = nil
+
+    init(id: String, name: String, token: IdentityToken, avatarJPEG: Data? = nil) {
+        self.id = id
+        self.name = name
+        self.token = token
+        self.avatarJPEG = avatarJPEG
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, token, avatarJPEG }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        token = try c.decode(IdentityToken.self, forKey: .token)
+        avatarJPEG = try? c.decode(Data.self, forKey: .avatarJPEG)
+    }
 }
 
 /// A paired friend, cached locally so the widget's friend picker works offline.
@@ -35,6 +54,23 @@ struct FriendInfo: Codable, Equatable, Identifiable, Hashable {
     var id: String          // friend's addressable participant ID
     var name: String
     var token: IdentityToken
+    var avatarJPEG: Data? = nil
+
+    init(id: String, name: String, token: IdentityToken, avatarJPEG: Data? = nil) {
+        self.id = id
+        self.name = name
+        self.token = token
+        self.avatarJPEG = avatarJPEG
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, token, avatarJPEG }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        token = try c.decode(IdentityToken.self, forKey: .token)
+        avatarJPEG = try? c.decode(Data.self, forKey: .avatarJPEG)
+    }
 }
 
 /// What a message carries: a dot-grid, a photo, or a freehand doodle. Doodles
@@ -74,11 +110,14 @@ struct DisplayDrawing: Codable, Equatable {
     var messageID: String?
     /// The emoji I reacted with to this RECEIVED dotdot (local; badges the widget).
     var myReaction: String?
+    /// Sender's profile photo (tiny JPEG). Rides the drawing so the widget badge
+    /// doesn't need a roster lookup. Nil → token symbol fallback.
+    var avatarJPEG: Data? = nil
 
-    init(kind: MessageKind, grid: Grid? = nil, imageData: Data? = nil,
+    nonisolated init(kind: MessageKind, grid: Grid? = nil, imageData: Data? = nil,
          senderID: String, senderName: String, token: IdentityToken, sentAt: Date,
          messageID: String? = nil, myReaction: String? = nil,
-         serverCreatedAt: Date? = nil, recordName: String? = nil) {
+         serverCreatedAt: Date? = nil, recordName: String? = nil, avatarJPEG: Data? = nil) {
         self.kind = kind
         self.grid = grid
         self.imageData = imageData
@@ -90,40 +129,44 @@ struct DisplayDrawing: Codable, Equatable {
         self.recordName = recordName
         self.messageID = messageID
         self.myReaction = myReaction
+        self.avatarJPEG = avatarJPEG
     }
 
     /// The trustworthy ordering clock for received content, with a tolerant
     /// fallback for local echoes and records cached by older app versions.
     nonisolated var orderingDate: Date { serverCreatedAt ?? sentAt }
 
-    static func dots(_ grid: Grid, senderID: String, senderName: String,
+    nonisolated static func dots(_ grid: Grid, senderID: String, senderName: String,
                      token: IdentityToken, sentAt: Date, messageID: String? = nil,
-                     serverCreatedAt: Date? = nil, recordName: String? = nil) -> DisplayDrawing {
+                     serverCreatedAt: Date? = nil, recordName: String? = nil,
+                     avatarJPEG: Data? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .dots, grid: grid, senderID: senderID,
                        senderName: senderName, token: token, sentAt: sentAt, messageID: messageID,
-                       serverCreatedAt: serverCreatedAt, recordName: recordName)
+                       serverCreatedAt: serverCreatedAt, recordName: recordName, avatarJPEG: avatarJPEG)
     }
 
-    static func photo(_ imageData: Data, senderID: String, senderName: String,
+    nonisolated static func photo(_ imageData: Data, senderID: String, senderName: String,
                       token: IdentityToken, sentAt: Date, messageID: String? = nil,
-                      serverCreatedAt: Date? = nil, recordName: String? = nil) -> DisplayDrawing {
+                      serverCreatedAt: Date? = nil, recordName: String? = nil,
+                      avatarJPEG: Data? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .photo, imageData: imageData, senderID: senderID,
                        senderName: senderName, token: token, sentAt: sentAt, messageID: messageID,
-                       serverCreatedAt: serverCreatedAt, recordName: recordName)
+                       serverCreatedAt: serverCreatedAt, recordName: recordName, avatarJPEG: avatarJPEG)
     }
 
-    static func doodle(_ imageData: Data, senderID: String, senderName: String,
+    nonisolated static func doodle(_ imageData: Data, senderID: String, senderName: String,
                        token: IdentityToken, sentAt: Date, messageID: String? = nil,
-                       serverCreatedAt: Date? = nil, recordName: String? = nil) -> DisplayDrawing {
+                       serverCreatedAt: Date? = nil, recordName: String? = nil,
+                       avatarJPEG: Data? = nil) -> DisplayDrawing {
         DisplayDrawing(kind: .doodle, imageData: imageData, senderID: senderID,
                        senderName: senderName, token: token, sentAt: sentAt, messageID: messageID,
-                       serverCreatedAt: serverCreatedAt, recordName: recordName)
+                       serverCreatedAt: serverCreatedAt, recordName: recordName, avatarJPEG: avatarJPEG)
     }
 
     // Tolerant decode: older cached records had no `kind` and a required `grid`.
     enum CodingKeys: String, CodingKey {
         case kind, grid, imageData, senderID, senderName, token, sentAt,
-             serverCreatedAt, recordName, messageID, myReaction
+             serverCreatedAt, recordName, messageID, myReaction, avatarJPEG
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -138,6 +181,7 @@ struct DisplayDrawing: Codable, Equatable {
         recordName = try? c.decode(String.self, forKey: .recordName)
         messageID = try? c.decode(String.self, forKey: .messageID)
         myReaction = try? c.decode(String.self, forKey: .myReaction)
+        avatarJPEG = try? c.decode(Data.self, forKey: .avatarJPEG)
     }
 }
 
@@ -219,8 +263,9 @@ struct QueuedSend: Codable, Equatable, Identifiable {
     var senderName: String
     var token: IdentityToken
     var createdAt: Date
-    /// Flush attempts so far — the retry machinery gives up at a cap instead of
-    /// hammering forever; the debug panel shows it so a stuck queue is diagnosable.
+    /// Flush attempts so far. Retries continue until a terminal error — there is
+    /// no attempt cap — but the debug panel shows this count so a queue that's
+    /// stuck retrying is still diagnosable.
     var attempts: Int = 0
     /// The last send error, human-readable — surfaced in the debug panel.
     var lastErrorDescription: String?

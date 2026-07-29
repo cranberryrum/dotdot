@@ -93,7 +93,8 @@ final class NotificationService: UNNotificationServiceExtension {
             content.threadIdentifier = "drawings-\(senderID)"
             if let sentAt = fields["sentAt"] as? Date {
                 var route = NotificationRoute
-                    .receivedDrawing(senderID: senderID, sentAt: sentAt).userInfo
+                    .receivedDrawing(senderID: senderID, sentAt: sentAt,
+                                     messageID: fields["messageID"] as? String).userInfo
                 route[NotificationDeliveryKey.subscriptionID] = subscriptionID
                 route[NotificationDeliveryKey.recordName] = recordID?.recordName
                 content.userInfo = route

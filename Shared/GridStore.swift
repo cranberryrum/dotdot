@@ -61,8 +61,16 @@ struct GridStore {
     /// lookback result can fill its true feed position but can never roll either
     /// widget slot back to older content. Returns true only for a genuinely new
     /// inbox row, so callers don't announce/reload duplicate push deliveries.
+    ///
+    /// Rejects a drawing whose sender is actually THIS account (a second device
+    /// signed into the same iCloud ID) — belt-and-suspenders against a same-account
+    /// record ever being mistaken for a friend's, even if it slips past the
+    /// sender-exclusion filter earlier in the pipeline.
     @discardableResult
     func saveReceived(_ drawing: DisplayDrawing) -> Bool {
+        if let myID = loadProfile()?.id, ParticipantIdentity.belongsToAccount(drawing.senderID, userID: myID) {
+            return false
+        }
         let inserted = insertReceivedHistory(drawing)
 
         if let current = decode(DisplayDrawing.self, forKey: Self.friendDisplayKey(drawing.senderID)) {
