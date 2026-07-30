@@ -10,6 +10,24 @@
 import UIKit
 
 enum ImageProcessing {
+    /// Profile-photo badge size. Small enough to ride App Group / Drawing records
+    /// without bloating history (~10–20 KB JPEG), sharp enough at widget badge sizes.
+    static let avatarPixels: CGFloat = 256
+
+    /// Center-crop a gallery pick into a tiny avatar JPEG. Same pipeline spirit as
+    /// widget photos — upright, square, never full-res.
+    static func avatarJPEG(from image: UIImage, quality: CGFloat = 0.72) -> Data? {
+        let upright = image.normalizedUp()
+        guard let cg = upright.cgImage else { return nil }
+        let w = CGFloat(cg.width)
+        let h = CGFloat(cg.height)
+        let side = min(w, h)
+        let rect = CGRect(x: (w - side) / 2 / w, y: (h - side) / 2 / h,
+                          width: side / w, height: side / h)
+        return widgetJPEG(from: upright, normalizedRect: rect,
+                          targetPixels: avatarPixels, quality: quality)
+    }
+
     /// Crop `image` to `normalizedRect` (a square region in 0...1 image space),
     /// downscale to `targetPixels` square, and JPEG-encode. HEIC and any odd
     /// orientation are normalized to an upright JPEG so the widget renders

@@ -14,40 +14,24 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var name: String
-    @State private var symbol: String
-    @State private var colorIndex: Int
-    @State private var saving = false
-    @State private var saveStatus: SaveStatus?
-    @State private var saveStatusResetTask: Task<Void, Never>?
-
     @State private var generatingCode = false
     @State private var copied = false
     @State private var copyResetTask: Task<Void, Never>?
 
     @State private var showAddFriend = false
-    @State private var showNotifPriming = false
     @State private var showDeleteConfirm = false
     @State private var deleting = false
 
-    private let symbols = ["★", "♥", "✦", "☺", "✿", "✚", "◆", "▲", "♪", "✺", "☀", "☆"]
+    /// One sheet at a time — stacking two `.sheet` modifiers on the same view
+    /// can leave an invisible presentation layer after PHPicker dismisses.
+    private enum ActiveSheet: Identifiable {
+        case editProfile, notifPriming
+        var id: Int { hashValue }
+    }
+    @State private var activeSheet: ActiveSheet?
 
     private let privacyPolicyURL = URL(string: "https://github.com/cranberryrum/dotdot/blob/main/PRIVACY.md")!
     private let supportEmail = "adityakoltedes@gmail.com"
-
-    init() {
-        let p = AppModel.shared.profile
-        _name = State(initialValue: p?.name ?? "")
-        _symbol = State(initialValue: p?.token.symbol ?? "★")
-        _colorIndex = State(initialValue: p?.token.colorIndex ?? 0)
-    }
-
-    private var token: IdentityToken { IdentityToken(symbol: symbol, colorIndex: colorIndex) }
-    private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
-    private var profileChanged: Bool {
-        guard let p = appModel.profile else { return true }
-        return trimmedName != p.name || token != p.token
-    }
 
     var body: some View {
         NavigationStack {
@@ -72,100 +56,57 @@ struct SettingsView: View {
         .font(DotFont.ui(17))
         .textCase(.lowercase)
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showNotifPriming) { NotificationPrimingSheet() }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .editProfile:
+                EditProfileSheet()
+            case .notifPriming:
+                NotificationPrimingSheet()
+            }
+        }
         .task { await appModel.loadOrMintCode() }
         .task { await appModel.notifications.refresh() }   // live status, read fresh
     }
 
-    // MARK: Profile
+    // MARK: Profile (summary — edits live in the L2 sheet)
 
     private var profileCard: some View {
-        card {
-            HStack {
-                Text("profile").font(DotFont.heavy(15)).foregroundStyle(.white)
-                Spacer()
-                TokenBadge(token: token, size: 44)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: token)
-            }
+        let name = appModel.profile?.name ?? "you"
+        let token = appModel.profile?.token ?? .placeholder
+        let avatar = appModel.profile?.avatarJPEG
 
-            TextField("", text: $name, prompt: Text("your name").foregroundStyle(.white.opacity(0.4)))
-                .textInputAutocapitalization(.words)
-                .font(DotFont.ui(18, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.vertical, 12).padding(.horizontal, 14)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.06)))
+        return Button { activeSheet = .editProfile } label: {
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name)
+                        .font(DotFont.heavy(18))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text("edit profile")
+                        .font(DotFont.ui(13))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+                Spacer(minLength: 8)
+                ZStack(alignment: .bottomTrailing) {
+                    TokenBadge(token: token, avatarJPEG: avatar, size: 56)
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: token)
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: avatar?.count)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(symbols, id: \.self) { option in
-                        Button { symbol = option } label: {
-                            Text(option)
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 42, height: 42)
-                                .background(RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.white.opacity(symbol == option ? 0.18 : 0.06)))
-                        }
-                        .buttonStyle(.plain)
-                    }
+                    Image(systemName: "pencil")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .frame(width: 20, height: 20)
+                        .background(Circle().fill(Theme.cream))
+                        .overlay(Circle().strokeBorder(Palette.boardBackground, lineWidth: 2))
+                        .offset(x: 2, y: 2)
                 }
             }
-
-            HStack(spacing: 10) {
-                ForEach(Palette.entries.indices, id: \.self) { index in
-                    Button { colorIndex = index } label: {
-                        Circle()
-                            .fill(Palette.color(at: index))
-                            .frame(width: 32, height: 32)
-                            .overlay(Circle().strokeBorder(.white.opacity(colorIndex == index ? 0.95 : 0), lineWidth: 3).padding(2))
-                            .scaleEffect(colorIndex == index ? 1 : 0.85)
-                    }
-                    .buttonStyle(.plain)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: colorIndex)
-                    .accessibilityLabel(Palette.name(at: index))
-                    .accessibilityAddTraits(colorIndex == index ? .isSelected : [])
-                }
-            }
-
-            Button { Task { await saveProfile() } } label: {
-                Text(saving ? "saving…" : "save profile")
-                    .font(DotFont.ui(15, weight: .bold))
-                    .foregroundStyle(token.prefersDarkText ? .black.opacity(0.85) : .white)
-                    .frame(maxWidth: .infinity).frame(height: 46)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(token.color))
-            }
-            .buttonStyle(SquishyButtonStyle())
-            .disabled(trimmedName.isEmpty || !profileChanged || saving)
-            .opacity(trimmedName.isEmpty || !profileChanged ? 0.5 : 1)
-
-            // In-sheet feedback: toasts host behind sheets, so they'd be invisible here.
-            if let saveStatus {
-                Text(saveStatus.text)
-                    .font(DotFont.ui(13, weight: .semibold))
-                    .foregroundStyle(saveStatus.isError ? Theme.red : .white.opacity(0.6))
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity)
-            }
+            .padding(18)
+            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Palette.boardBackground))
+            .contentShape(Rectangle())
         }
-    }
-
-    private struct SaveStatus { let text: String; let isError: Bool }
-
-    private func saveProfile() async {
-        saving = true
-        withAnimation(Motion.surface) { saveStatus = nil }
-        do {
-            try await appModel.updateProfile(name: trimmedName, token: token)
-            withAnimation(Motion.surface) { saveStatus = .init(text: "saved!", isError: false) }
-            saveStatusResetTask?.cancel()
-            saveStatusResetTask = Task {
-                try? await Task.sleep(for: .seconds(1.8))
-                guard !Task.isCancelled else { return }
-                withAnimation(Motion.surface) { saveStatus = nil }
-            }
-        } catch {
-            withAnimation(Motion.surface) { saveStatus = .init(text: "couldn't save — try again", isError: true) }
-        }
-        saving = false
+        .buttonStyle(SquishyButtonStyle())
+        .accessibilityLabel("edit profile")
     }
 
     // MARK: Your code
@@ -276,7 +217,7 @@ struct SettingsView: View {
 
     private func notificationsTapped() {
         if appModel.notifications.canPrime {
-            showNotifPriming = true               // notDetermined → our soft ask
+            activeSheet = .notifPriming            // notDetermined → our soft ask
         } else {
             appModel.notifications.openSystemSettings()   // denied (re-enable) or authorized (manage)
         }
@@ -398,6 +339,220 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Edit profile (L2 sheet)
+
+/// Name, photo, symbol, and color — kept off the settings list so that card stays calm.
+private struct EditProfileSheet: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String
+    @State private var symbol: String
+    @State private var colorIndex: Int
+    @State private var avatarJPEG: Data?
+    @State private var saving = false
+    @State private var saveStatus: SaveStatus?
+    @State private var saveStatusResetTask: Task<Void, Never>?
+    @State private var showGallery = false
+
+    private let symbols = ["★", "♥", "✦", "☺", "✿", "✚", "◆", "▲", "♪", "✺", "☀", "☆"]
+
+    init() {
+        let p = AppModel.shared.profile
+        _name = State(initialValue: p?.name ?? "")
+        _symbol = State(initialValue: p?.token.symbol ?? "★")
+        _colorIndex = State(initialValue: p?.token.colorIndex ?? 0)
+        _avatarJPEG = State(initialValue: p?.avatarJPEG)
+    }
+
+    private var token: IdentityToken { IdentityToken(symbol: symbol, colorIndex: colorIndex) }
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
+    private var hasPhoto: Bool { avatarJPEG != nil }
+    private var profileChanged: Bool {
+        guard let p = appModel.profile else { return true }
+        return trimmedName != p.name || token != p.token || avatarJPEG != p.avatarJPEG
+    }
+
+    private struct SaveStatus { let text: String; let isError: Bool }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    avatarBlock
+
+                    TextField("", text: $name, prompt: Text("your name").foregroundStyle(.white.opacity(0.4)))
+                        .textInputAutocapitalization(.words)
+                        .font(DotFont.ui(18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.vertical, 14).padding(.horizontal, 16)
+                        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Palette.boardBackground))
+
+                    // Token chrome only matters when there's no photo — hide it while
+                    // a picture is the face friends see.
+                    if !hasPhoto {
+                        tokenPickers
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
+                    Button { Task { await save() } } label: {
+                        Text(saving ? "saving…" : "save")
+                            .font(DotFont.ui(15, weight: .bold))
+                            .foregroundStyle(saveForeground)
+                            .frame(maxWidth: .infinity).frame(height: 48)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(saveBackground)
+                            )
+                    }
+                    .buttonStyle(SquishyButtonStyle())
+                    .disabled(trimmedName.isEmpty || !profileChanged || saving)
+                    .opacity(trimmedName.isEmpty || !profileChanged ? 0.5 : 1)
+
+                    if let saveStatus {
+                        Text(saveStatus.text)
+                            .font(DotFont.ui(13, weight: .semibold))
+                            .foregroundStyle(saveStatus.isError ? Theme.red : .white.opacity(0.6))
+                            .frame(maxWidth: .infinity)
+                            .transition(.opacity)
+                    }
+                }
+                .padding(24)
+                .animation(.spring(response: 0.32, dampingFraction: 0.86), value: hasPhoto)
+            }
+            .background(Palette.screenBackground.ignoresSafeArea())
+            .navigationTitle("edit profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("done") { dismiss() } }
+            }
+        }
+        .font(DotFont.ui(17))
+        .textCase(.lowercase)
+        .preferredColorScheme(.dark)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(Palette.screenBackground)
+        .sheet(isPresented: $showGallery) {
+            GalleryPicker { picked in
+                showGallery = false
+                guard let picked else { return }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    avatarJPEG = ImageProcessing.avatarJPEG(from: picked)
+                }
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    private var avatarBlock: some View {
+        VStack(spacing: 10) {
+            Button { showGallery = true } label: {
+                ZStack(alignment: .bottomTrailing) {
+                    TokenBadge(token: token, avatarJPEG: avatarJPEG, size: 96)
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: token)
+                        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: avatarJPEG?.count)
+
+                    Image(systemName: hasPhoto ? "pencil" : "plus")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Theme.cream))
+                        .overlay(Circle().strokeBorder(Palette.screenBackground, lineWidth: 3))
+                        .offset(x: 2, y: 2)
+                }
+            }
+            .buttonStyle(SquishyButtonStyle())
+            .accessibilityLabel(hasPhoto ? "change profile photo" : "add profile photo")
+
+            Text(hasPhoto ? "tap to change photo" : "tap to add a photo, or pick a token below")
+                .font(DotFont.ui(13))
+                .foregroundStyle(.white.opacity(0.4))
+                .multilineTextAlignment(.center)
+
+            if hasPhoto {
+                Button("remove photo") {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                        avatarJPEG = nil
+                    }
+                }
+                .font(DotFont.ui(13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.45))
+                .buttonStyle(SquishyButtonStyle())
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var tokenPickers: some View {
+        VStack(spacing: 16) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(symbols, id: \.self) { option in
+                        Button { symbol = option } label: {
+                            Text(option)
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 42, height: 42)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                        .fill(.white.opacity(symbol == option ? 0.18 : 0.06))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+
+            HStack(spacing: 10) {
+                ForEach(Palette.entries.indices, id: \.self) { index in
+                    Button { colorIndex = index } label: {
+                        Circle()
+                            .fill(Palette.color(at: index))
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Circle().strokeBorder(.white.opacity(colorIndex == index ? 0.95 : 0),
+                                                      lineWidth: 3).padding(2)
+                            )
+                            .scaleEffect(colorIndex == index ? 1 : 0.85)
+                    }
+                    .buttonStyle(.plain)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: colorIndex)
+                    .accessibilityLabel(Palette.name(at: index))
+                    .accessibilityAddTraits(colorIndex == index ? .isSelected : [])
+                }
+            }
+        }
+    }
+
+    private var saveBackground: Color { hasPhoto ? Theme.cream : token.color }
+    private var saveForeground: Color {
+        hasPhoto ? .black.opacity(0.85)
+                 : (token.prefersDarkText ? .black.opacity(0.85) : .white)
+    }
+
+    private func save() async {
+        saving = true
+        withAnimation(Motion.surface) { saveStatus = nil }
+        do {
+            try await appModel.updateProfile(name: trimmedName, token: token, avatarJPEG: avatarJPEG)
+            withAnimation(Motion.surface) { saveStatus = .init(text: "saved!", isError: false) }
+            saveStatusResetTask?.cancel()
+            saveStatusResetTask = Task {
+                try? await Task.sleep(for: .seconds(1.2))
+                guard !Task.isCancelled else { return }
+                dismiss()
+            }
+        } catch {
+            withAnimation(Motion.surface) { saveStatus = .init(text: "couldn't save — try again", isError: true) }
+        }
+        saving = false
+    }
+}
+
 // MARK: - Privacy policy
 
 struct PrivacyPolicyView: View {
@@ -412,7 +567,7 @@ struct PrivacyPolicyView: View {
                 Text("""
                 no accounts, no logins. your identity is your iCloud account. dotdot does not track you, run ads, or sell your data.
 
-                what's stored, in Apple's iCloud (CloudKit): your name and identity token, the drawings and photos you send, your friend connections, and an identifier used only to deliver messages to the right device. friends you pair with can see your name, token, and what you send them.
+                what's stored, in Apple's iCloud (CloudKit): your name, identity token, optional profile photo, the drawings and photos you send, your friend connections, and an identifier used only to deliver messages to the right device. friends you pair with can see your name, token, photo, and what you send them.
 
                 you can delete your data anytime from settings → delete my data. note: a drawing already delivered to a friend's device may still exist on their device.
 
