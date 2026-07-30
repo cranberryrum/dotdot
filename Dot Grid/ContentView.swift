@@ -10,7 +10,9 @@ import UIKit
 import WidgetKit
 
 struct ContentView: View {
-    @State private var grid: Grid = GridStore.shared.load()
+    // A fresh launch always starts from a blank board — only the chosen grid
+    // SIZE carries over, never the last-drawn/last-sent content.
+    @State private var grid: Grid = Grid.empty(side: GridStore.shared.load().side)
     // Shared with the wordmark in ComposerView via UserDefaults — pick a color, the
     // logo follows. Persists the last-picked accent across launches too.
     @AppStorage("accentColorIndex") private var selectedColorIndex = 0
