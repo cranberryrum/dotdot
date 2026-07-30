@@ -33,6 +33,7 @@ indexes by hand (CloudKit doesn't infer them). In the Dashboard → Schema → I
 |-------------|---------------|----------------------|
 | Friendship  | members       | Queryable            |
 | InviteCode  | code          | Queryable            |
+| InviteCode  | ownerID       | Queryable            |
 | Drawing     | recipientID   | Queryable            |
 | Drawing     | senderID      | Queryable            |
 | Drawing     | sentAt        | Queryable + Sortable |
@@ -45,22 +46,28 @@ indexes by hand (CloudKit doesn't infer them). In the Dashboard → Schema → I
 | Reaction    | recordName    | Queryable (default)  |
 
 > `senderID` needs a Queryable index now too — "delete my data" queries drawings
-> by sender to remove the ones you sent. `Reaction.reactorID` is likewise only
-> for "delete my data".
+> by sender to remove the ones you sent. `Reaction.reactorID` and
+> `InviteCode.ownerID` are likewise only for "delete my data" (invite codes you
+> created are now removed on account deletion too).
 
 Fields per type (auto-created on first write; types shown for reference):
 
 - **Profile** — recordName = the user's CloudKit user-record name. `name` (String),
-  `tokenSymbol` (String), `tokenColor` (Int64).
+  `tokenSymbol` (String), `tokenColor` (Int64), `avatarAsset` (Asset, optional —
+  a tiny center-cropped JPEG for the profile photo / widget badge).
 - **Friendship** — recordName = `pair_<idA>__<idB>` (sorted, so it's idempotent).
   `members` (List<String>), `userA`, `userB`.
-- **InviteCode** — `code` (String), `ownerID` (String), `expiresAt` (Date/Time),
-  `used` (Int64), `usedBy` (String).
+- **InviteCode** — recordName = `invite-<code>` (new codes; deterministic so two
+  simultaneous generators can't publish the same visible code under different
+  record IDs — CloudKit arbitrates the collision). `code` (String), `ownerID`
+  (String), `expiresAt` (Date/Time), `used` (Int64), `usedBy` (String).
 - **Drawing** — `recipientID`, `senderID`, `senderName`, `tokenSymbol` (String),
   `tokenColor` (Int64), `sentAt` (Date/Time), `kind` (String: "dots"|"photo"|"doodle"),
   `gridData` (Bytes, ~1 KB JSON, dots only), `imageAsset` (Asset, photo only —
-  an already-downscaled widget-safe JPEG), `messageID` (String — the sender's
-  send UUID; the key a reaction points back at; no index needed).
+  an already-downscaled widget-safe JPEG), `avatarData` (Bytes, optional — tiny
+  profile JPEG so the recipient's widget badge can show a photo without a
+  separate profile fetch), `messageID` (String — the sender's send UUID; the key
+  a reaction points back at; no index needed).
 - **Reaction** — recordName = `reaction-<reactor>-<messageID>` (deterministic, so
   re-reacting replaces and un-reacting deletes). `emoji` (String), `recipientID`
   (String — the original sender, who fetches it), `reactorID`, `reactorName`

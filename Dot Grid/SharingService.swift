@@ -8,12 +8,16 @@
 //
 //  Required CloudKit Dashboard schema (development env auto-creates record types
 //  on first save, but you MUST add these indexes by hand):
-//    • Profile     recordName=<userID>   fields: name, tokenSymbol, tokenColor
+//    • Profile     recordName=<userID>   fields: name, tokenSymbol, tokenColor,
+//                  avatarAsset (optional CKAsset — tiny profile JPEG)
 //    • Friendship  recordName="pair_<a>__<b>"  fields: members [String] (QUERYABLE)
-//    • InviteCode  fields: code (QUERYABLE), ownerID, expiresAt, used
+//    • InviteCode  recordName="invite-<code>" (new codes); fields: code (QUERYABLE,
+//                  legacy record-name lookup), ownerID (QUERYABLE, delete-my-data),
+//                  expiresAt, used
 //    • Drawing     fields: recipientID (QUERYABLE), creationDate and sentAt
 //                  (SORTABLE/QUERYABLE), senderID, senderName, tokenSymbol,
-//                  tokenColor, gridData/imageAsset
+//                  tokenColor, gridData/imageAsset,
+//                  avatarData (optional Bytes — tiny profile JPEG for widget badge)
 //    • Reaction    fields: recipientID (QUERYABLE), modificationDate and sentAt
 //                  (SORTABLE/QUERYABLE), reactorID, reactorName, emoji
 //
@@ -150,14 +154,30 @@ final class SharingService {
     }
 
     @discardableResult
-    func saveMyProfile(userID: String, name: String, token: IdentityToken, existing: Profile?) async throws -> Profile {
+    func saveMyProfile(userID: String, name: String, token: IdentityToken,
+                       avatarJPEG: Data?, existing: Profile?) async throws -> Profile {
         let recordID = CKRecord.ID(recordName: userID)
         let record = (try? await db.record(for: recordID)) ?? CKRecord(recordType: RT.profile, recordID: recordID)
         record["name"] = name as CKRecordValue
         record["tokenSymbol"] = token.symbol as CKRecordValue
         record["tokenColor"] = token.colorIndex as CKRecordValue
+
+        // Stage a tiny JPEG for CloudKit; clear the field when the user removes it.
+        var stagedURL: URL?
+        defer { if let stagedURL { try? FileManager.default.removeItem(at: stagedURL) } }
+        if let avatarJPEG {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("jpg")
+            try avatarJPEG.write(to: url)
+            stagedURL = url
+            record["avatarAsset"] = CKAsset(fileURL: url)
+        } else {
+            record["avatarAsset"] = nil
+        }
+
         let saved = try await db.save(record)
-        return profile(from: saved) ?? Profile(id: userID, name: name, token: token)
+        return profile(from: saved) ?? Profile(id: userID, name: name, token: token, avatarJPEG: avatarJPEG)
     }
 
     // MARK: - Pairing
@@ -165,42 +185,74 @@ final class SharingService {
     /// How long a pairing code stays valid (and is shown to its owner).
     static let inviteCodeValidity: TimeInterval = 6 * 60 * 60   // 6 hours
 
-    /// Generate a fresh 6-digit code, valid (and reusable) for 6 hours.
+    /// Generate a fresh 6-digit code, valid (and reusable) for 6 hours. The code
+    /// is also the record identity for new clients: CloudKit then arbitrates
+    /// simultaneous generators, rather than two devices silently publishing the
+    /// same visible code under two different random record IDs.
     func generateCode(ownerID: String, ownerParticipantID: String) async throws -> String {
-        let code = String(format: "%06d", Int.random(in: 0...999_999))
-        let record = CKRecord(recordType: RT.inviteCode)
-        record["code"] = code as CKRecordValue
-        record["ownerID"] = ownerID as CKRecordValue
-        record["ownerParticipantID"] = ownerParticipantID as CKRecordValue
-        record["expiresAt"] = Date().addingTimeInterval(Self.inviteCodeValidity) as CKRecordValue
-        record["used"] = 0 as CKRecordValue
-        try await db.save(record)
-        return code
+        for _ in 0..<10 {
+            let code = String(format: "%06d", Int.random(in: 0...999_999))
+
+            // Avoid colliding with records made by older builds, whose record
+            // names were random and therefore cannot participate in uniqueness.
+            let legacyQuery = CKQuery(recordType: RT.inviteCode, predicate: NSPredicate(format: "code == %@", code))
+            let (legacyResults, _) = try await db.records(matching: legacyQuery, resultsLimit: 1)
+            guard legacyResults.isEmpty else { continue }
+
+            let recordID = CKRecord.ID(recordName: "invite-\(code)")
+            let record = CKRecord(recordType: RT.inviteCode, recordID: recordID)
+            record["code"] = code as CKRecordValue
+            record["ownerID"] = ownerID as CKRecordValue
+            record["ownerParticipantID"] = ownerParticipantID as CKRecordValue
+            record["expiresAt"] = Date().addingTimeInterval(Self.inviteCodeValidity) as CKRecordValue
+            record["used"] = 0 as CKRecordValue
+            do {
+                _ = try await db.save(record)
+                return code
+            } catch let error as CKError where error.code == .serverRecordChanged {
+                continue   // another device just claimed this exact code
+            }
+        }
+        throw PairingError.generic
     }
 
     /// Redeem a typed 6-digit code. Throws a `PairingError` on every failure path.
     func redeemCode(_ code: String, myID: String, myParticipantID: String) async throws {
         try checkRateLimit()
 
-        let predicate = NSPredicate(format: "code == %@", code)
-        let query = CKQuery(recordType: RT.inviteCode, predicate: predicate)
         let records: [CKRecord]
         do {
-            let (results, _) = try await db.records(matching: query, resultsLimit: 5)
-            records = results.compactMap { try? $0.1.get() }
+            let deterministicID = CKRecord.ID(recordName: "invite-\(code)")
+            if let direct = try? await db.record(for: deterministicID) {
+                records = [direct]
+            } else {
+                // Backward compatibility for codes generated by older builds,
+                // whose record names were random rather than "invite-<code>".
+                let query = CKQuery(recordType: RT.inviteCode, predicate: NSPredicate(format: "code == %@", code))
+                records = try await allRecords(matching: query)
+            }
         } catch {
             throw PairingError.generic
         }
 
-        guard let record = records.first else { throw PairingError.codeNotFound }
+        guard !records.isEmpty else { throw PairingError.codeNotFound }
+        let active = records.filter { (($0["expiresAt"] as? Date) ?? .distantPast) >= Date() }
+        guard !active.isEmpty else { throw PairingError.codeExpired }
 
-        let ownerID = record["ownerID"] as? String ?? ""
-        let ownerParticipantID = record["ownerParticipantID"] as? String ?? ownerID
-        let expiresAt = record["expiresAt"] as? Date ?? .distantPast
-
-        if ownerParticipantID == myParticipantID { throw PairingError.ownCode }
-        if ownerParticipantID == ownerID, ownerID == myID { throw PairingError.ownCode }
-        if expiresAt < Date() { throw PairingError.codeExpired }
+        let candidates: [(record: CKRecord, participantID: String)] = active.compactMap { record in
+            let ownerID = record["ownerID"] as? String ?? ""
+            let participantID = record["ownerParticipantID"] as? String ?? ownerID
+            guard !participantID.isEmpty, !ParticipantIdentity.belongsToAccount(participantID, userID: myID)
+            else { return nil }
+            return (record, participantID)
+        }
+        guard !candidates.isEmpty else { throw PairingError.ownCode }
+        // Multiple active owners for a legacy colliding code are ambiguous — never
+        // connect to an arbitrary `records.first`.
+        guard Set(candidates.map(\.participantID)).count == 1,
+              let ownerParticipantID = candidates.first?.participantID else {
+            throw PairingError.generic
+        }
 
         // Codes are reusable until they expire, so a friend can share one with
         // several pals over the 6-hour window. The friendship itself is idempotent.
@@ -251,7 +303,10 @@ final class SharingService {
 
         let otherIDs: [String] = friendshipsByID.values.compactMap { record in
             let members = (record["members"] as? [String]) ?? []
-            return members.first { $0 != myParticipantID && $0 != myID }
+            return members.first {
+                $0 != myParticipantID && $0 != myID
+                    && !ParticipantIdentity.belongsToAccount($0, userID: myID)
+            }
         }
 
         // One batched fetch for every friend's profile (this used to be one
@@ -267,7 +322,8 @@ final class SharingService {
             let recordID = CKRecord.ID(recordName: profileUserID(from: id))
             guard let record = try? profileResults[recordID]?.get(),
                   let profile = profile(from: record) else { continue }
-            friends.append(FriendInfo(id: id, name: profile.name, token: profile.token))
+            friends.append(FriendInfo(id: id, name: profile.name, token: profile.token,
+                                      avatarJPEG: profile.avatarJPEG))
         }
         return friends.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -284,8 +340,8 @@ final class SharingService {
         // legacy record keyed by user ID). Never touch the friend's OTHER pairings.
         let mine = Set([myParticipantID, myID])
         let query = CKQuery(recordType: RT.friendship, predicate: NSPredicate(format: "members CONTAINS %@", friendID))
-        if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
-            for record in results.compactMap({ try? $0.1.get() }) {
+        if let records = try? await allRecords(matching: query) {
+            for record in records {
                 let mem = Set((record["members"] as? [String]) ?? [])
                 if !mine.isDisjoint(with: mem) {
                     _ = try? await db.deleteRecord(withID: record.recordID)
@@ -297,25 +353,28 @@ final class SharingService {
     // MARK: - Delete my data
 
     /// Best-effort removal of the user's own CloudKit footprint: their profile,
-    /// friendships involving them, the drawings they sent, and their push
-    /// subscriptions. Drawings already delivered to a friend's device live in that
-    /// device's App Group and can't be reached from here.
+    /// invite codes, friendships involving them, drawings sent or addressed to
+    /// them, reactions, and push subscriptions. Drawings already delivered to a
+    /// friend's device live in that device's App Group and can't be reached here.
     func deleteMyData(userID: String, participantID: String) async {
         let ids = Set([participantID, userID])
 
         // Friendships involving me.
         for id in ids {
             let query = CKQuery(recordType: RT.friendship, predicate: NSPredicate(format: "members CONTAINS %@", id))
-            if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
-                for recordID in results.map(\.0) { _ = try? await db.deleteRecord(withID: recordID) }
+            if let recordIDs = try? await allRecordIDs(matching: query) {
+                for recordID in recordIDs { _ = try? await db.deleteRecord(withID: recordID) }
             }
         }
 
-        // Drawings I sent.
+        // Drawings I sent or that were addressed to me.
         for id in ids {
-            let query = CKQuery(recordType: RT.drawing, predicate: NSPredicate(format: "senderID == %@", id))
-            if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
-                for recordID in results.map(\.0) { _ = try? await db.deleteRecord(withID: recordID) }
+            for predicate in [NSPredicate(format: "senderID == %@", id),
+                              NSPredicate(format: "recipientID == %@", id)] {
+                let query = CKQuery(recordType: RT.drawing, predicate: predicate)
+                if let recordIDs = try? await allRecordIDs(matching: query) {
+                    for recordID in recordIDs { _ = try? await db.deleteRecord(withID: recordID) }
+                }
             }
         }
 
@@ -324,14 +383,20 @@ final class SharingService {
             for predicate in [NSPredicate(format: "reactorID == %@", id),
                               NSPredicate(format: "recipientID == %@", id)] {
                 let query = CKQuery(recordType: RT.reaction, predicate: predicate)
-                if let (results, _) = try? await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults) {
-                    for recordID in results.map(\.0) { _ = try? await db.deleteRecord(withID: recordID) }
+                if let recordIDs = try? await allRecordIDs(matching: query) {
+                    for recordID in recordIDs { _ = try? await db.deleteRecord(withID: recordID) }
                 }
             }
         }
 
         // My profile.
         _ = try? await db.deleteRecord(withID: CKRecord.ID(recordName: userID))
+
+        // Pairing codes I created (including expired records from older builds).
+        let inviteQuery = CKQuery(recordType: RT.inviteCode, predicate: NSPredicate(format: "ownerID == %@", userID))
+        if let recordIDs = try? await allRecordIDs(matching: inviteQuery) {
+            for recordID in recordIDs { _ = try? await db.deleteRecord(withID: recordID) }
+        }
 
         // My push subscriptions, both generations (so this device stops receiving).
         for id in ids {
@@ -365,9 +430,22 @@ final class SharingService {
         var succeeded: Bool { failedRecipientIDs.isEmpty }
     }
 
+    /// Strips empty/duplicate IDs and any address that resolves to THIS account.
+    /// Defense in depth: UI selection already contains friends only, but a stale
+    /// roster/outbox entry must never route a message back to the sender.
+    nonisolated static func safeRecipientIDs(_ recipientIDs: [String], localUserID: String) -> [String] {
+        var seen = Set<String>()
+        return recipientIDs.filter {
+            !$0.isEmpty && !ParticipantIdentity.belongsToAccount($0, userID: localUserID) && seen.insert($0).inserted
+        }
+    }
+
     func sendMessage(kind: MessageKind, grid: Grid?, imageData: Data?,
                      to recipientIDs: [String], from profile: Profile, senderID: String,
                      messageID: String? = nil, sentAt: Date = Date()) async -> SendResult {
+        let recipientIDs = Self.safeRecipientIDs(recipientIDs, localUserID: profile.id)
+        guard !recipientIDs.isEmpty else { return SendResult() }
+
         // For photos, stage the (already downscaled) JPEG to a temp file once; each
         // record gets its own CKAsset pointing at it.
         var assetURL: URL?
@@ -416,6 +494,9 @@ final class SharingService {
             if let messageID { record["messageID"] = messageID as CKRecordValue }
             if let gridData { record["gridData"] = gridData as CKRecordValue }
             if let assetURL { record["imageAsset"] = CKAsset(fileURL: assetURL) }
+            // Tiny avatar so the friend's widget badge can show a photo without a
+            // separate profile fetch. Optional — older clients simply ignore it.
+            if let avatar = profile.avatarJPEG { record["avatarData"] = avatar as CKRecordValue }
             return record
         }
 
@@ -675,38 +756,10 @@ final class SharingService {
         return fetched.sorted { $0.orderingDate < $1.orderingDate }
     }
 
+    /// Decoding lives in `Shared/DrawingDelivery.swift` — the app, the widget, and
+    /// the notification extension all decode a Drawing record through that ONE path.
     private func drawing(from record: CKRecord) -> DisplayDrawing? {
-        let sentAt = (record["sentAt"] as? Date) ?? record.creationDate ?? Date()
-        let senderID = record["senderID"] as? String ?? ""
-        let senderName = record["senderName"] as? String ?? "Friend"
-        let token = IdentityToken(
-            symbol: record["tokenSymbol"] as? String ?? "✦",
-            colorIndex: record["tokenColor"] as? Int ?? 0
-        )
-        let kind = MessageKind(rawValue: record["kind"] as? String ?? "dots") ?? .dots
-        let messageID = record["messageID"] as? String
-        let serverCreatedAt = record.creationDate
-        let recordName = record.recordID.recordName
-
-        switch kind {
-        case .photo, .doodle:
-            guard let asset = record["imageAsset"] as? CKAsset,
-                  let url = asset.fileURL,
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return kind == .doodle
-                ? .doodle(data, senderID: senderID, senderName: senderName, token: token,
-                          sentAt: sentAt, messageID: messageID,
-                          serverCreatedAt: serverCreatedAt, recordName: recordName)
-                : .photo(data, senderID: senderID, senderName: senderName, token: token,
-                         sentAt: sentAt, messageID: messageID,
-                         serverCreatedAt: serverCreatedAt, recordName: recordName)
-        case .dots:
-            guard let data = record["gridData"] as? Data,
-                  let grid = try? JSONDecoder().decode(Grid.self, from: data) else { return nil }
-            return .dots(grid, senderID: senderID, senderName: senderName, token: token,
-                         sentAt: sentAt, messageID: messageID,
-                         serverCreatedAt: serverCreatedAt, recordName: recordName)
-        }
+        DrawingRecordDecoder.drawing(from: record)
     }
 
     // MARK: - Reactions
@@ -942,16 +995,49 @@ final class SharingService {
 
     // MARK: - Helpers
 
+    /// Query every page. CloudKit commonly returns a cursor even when the caller
+    /// asks for `maximumResults`; cleanup and legacy-migration paths must not stop
+    /// after the first server-chosen page.
+    private func allRecords(matching query: CKQuery) async throws -> [CKRecord] {
+        var records: [CKRecord] = []
+        var (results, cursor) = try await db.records(matching: query, resultsLimit: CKQueryOperation.maximumResults)
+        while true {
+            records.append(contentsOf: results.compactMap { try? $0.1.get() })
+            guard let next = cursor else { break }
+            (results, cursor) = try await db.records(
+                continuingMatchFrom: next, resultsLimit: CKQueryOperation.maximumResults)
+        }
+        return records
+    }
+
+    private func allRecordIDs(matching query: CKQuery) async throws -> [CKRecord.ID] {
+        var recordIDs: [CKRecord.ID] = []
+        var (results, cursor) = try await db.records(
+            matching: query, desiredKeys: [], resultsLimit: CKQueryOperation.maximumResults)
+        while true {
+            recordIDs.append(contentsOf: results.map(\.0))
+            guard let next = cursor else { break }
+            (results, cursor) = try await db.records(
+                continuingMatchFrom: next, desiredKeys: [], resultsLimit: CKQueryOperation.maximumResults)
+        }
+        return recordIDs
+    }
+
     private func profile(from record: CKRecord) -> Profile? {
         guard let name = record["name"] as? String else { return nil }
         let token = IdentityToken(
             symbol: record["tokenSymbol"] as? String ?? "✦",
             colorIndex: record["tokenColor"] as? Int ?? 0
         )
+        var avatarJPEG: Data?
+        if let asset = record["avatarAsset"] as? CKAsset, let url = asset.fileURL {
+            avatarJPEG = try? Data(contentsOf: url)
+        }
         return Profile(
             id: record.recordID.recordName,
             name: name,
-            token: token
+            token: token,
+            avatarJPEG: avatarJPEG
         )
     }
 

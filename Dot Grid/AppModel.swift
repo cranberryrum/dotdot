@@ -342,20 +342,23 @@ final class AppModel {
 
     /// Step 1 of onboarding: create the profile. Stays on the onboarding flow so
     /// step 2 (add a friend) can run before landing in the composer.
-    func createProfile(name: String, token: IdentityToken) async throws {
+    func createProfile(name: String, token: IdentityToken, avatarJPEG: Data? = nil) async throws {
         guard case let .available(userID) = account else { throw PairingError.notSignedIn }
-        let saved = try await service.saveMyProfile(userID: userID, name: name, token: token, existing: profile)
+        let saved = try await service.saveMyProfile(
+            userID: userID, name: name, token: token, avatarJPEG: avatarJPEG, existing: profile
+        )
         profile = saved
         GridStore.shared.saveProfile(saved)
+        WidgetCenter.shared.reloadAllTimelines()
         await refreshPushSubscriptions(userID: userID)
         await refreshFriends()
         await pullIncoming()
     }
 
     /// Update the profile from the Settings screen (reuses the same save path).
-    func updateProfile(name: String, token: IdentityToken) async throws {
+    func updateProfile(name: String, token: IdentityToken, avatarJPEG: Data? = nil) async throws {
         guard case .available = account else { throw PairingError.notSignedIn }
-        try await createProfile(name: name, token: token)
+        try await createProfile(name: name, token: token, avatarJPEG: avatarJPEG)
     }
 
     /// Step 2 done (added a friend or skipped) → land in the composer.
