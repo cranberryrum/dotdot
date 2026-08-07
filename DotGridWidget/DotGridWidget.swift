@@ -25,6 +25,26 @@ extension DisplayDrawing {
     }
 }
 
+/// One line describing a provider's result, for the debug panel's widget
+/// diagnostics — the fastest way to see what a widget actually computed
+/// without device console/crash-log access.
+private func widgetDiagnosticSummary(_ drawing: DisplayDrawing?) -> String {
+    guard let drawing else { return "nil (renders empty state)" }
+    let sender = drawing.senderID.isEmpty ? "me" : drawing.senderID
+    let sentAt = drawing.sentAt.formatted(date: .abbreviated, time: .standard)
+    let server = drawing.serverCreatedAt?.formatted(date: .abbreviated, time: .standard) ?? "nil"
+    return "\(drawing.kind.rawValue) from \(sender) · sentAt \(sentAt) · serverCreatedAt \(server)"
+}
+
+private func recordWidgetDiagnostic(providerKind: String, method: String, context: TimelineProviderContext,
+                                    hadDebugOverride: Bool, drawing: DisplayDrawing?) {
+    GridStore.shared.recordWidgetDiagnostic(GridStore.WidgetDiagnostic(
+        at: .now, providerKind: providerKind, method: method, family: "\(context.family)",
+        isPreview: context.isPreview, hadDebugOverride: hadDebugOverride,
+        resultSummary: widgetDiagnosticSummary(drawing)
+    ))
+}
+
 // MARK: - Shared widget view (renders dots OR photo)
 
 struct DotGridWidgetView: View {
@@ -133,24 +153,31 @@ struct LatestProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (DotGridEntry) -> Void) {
-        if let override = GridStore.shared.widgetDebugOverride() {
-            completion(DotGridEntry(date: .now, drawing: override.drawing))
-            return
+        let override = GridStore.shared.widgetDebugOverride()
+        let drawing: DisplayDrawing?
+        if let override {
+            drawing = override.drawing
+        } else {
+            let stored = GridStore.shared.latestDisplayDrawing()
+            drawing = (context.isPreview && stored == nil) ? DisplayDrawing.placeholder(at: .now) : stored
         }
-        let stored = GridStore.shared.latestDisplayDrawing()
-        let drawing = (context.isPreview && stored == nil) ? DisplayDrawing.placeholder(at: .now) : stored
+        recordWidgetDiagnostic(providerKind: "latest", method: "snapshot", context: context,
+                               hadDebugOverride: override != nil, drawing: drawing)
         completion(DotGridEntry(date: .now, drawing: drawing))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<DotGridEntry>) -> Void) {
         // The debug panel's widget-preview override wins over live data — even
         // when it holds no drawing (that's the empty-state preview).
+        let override = GridStore.shared.widgetDebugOverride()
         let drawing: DisplayDrawing?
-        if let override = GridStore.shared.widgetDebugOverride() {
+        if let override {
             drawing = override.drawing
         } else {
             drawing = GridStore.shared.latestDisplayDrawing()
         }
+        recordWidgetDiagnostic(providerKind: "latest", method: "timeline", context: context,
+                               hadDebugOverride: override != nil, drawing: drawing)
         let entry = DotGridEntry(date: .now, drawing: drawing)
         // The app reloads timelines on send/receive; the widget never fetches. But a
         // reload requested from the BACKGROUND (push path) can be throttled/dropped by
@@ -215,13 +242,19 @@ struct FriendProvider: AppIntentTimelineProvider {
     }
 
     func snapshot(for configuration: SelectFriendIntent, in context: Context) async -> DotGridEntry {
-        DotGridEntry(date: .now, drawing: drawing(for: configuration) ?? .placeholder(at: .now))
+        let drawing = drawing(for: configuration) ?? .placeholder(at: .now)
+        recordWidgetDiagnostic(providerKind: "friend", method: "snapshot", context: context,
+                               hadDebugOverride: GridStore.shared.widgetDebugOverride() != nil, drawing: drawing)
+        return DotGridEntry(date: .now, drawing: drawing)
     }
 
     func timeline(for configuration: SelectFriendIntent, in context: Context) async -> Timeline<DotGridEntry> {
+        let drawing = drawing(for: configuration)
+        recordWidgetDiagnostic(providerKind: "friend", method: "timeline", context: context,
+                               hadDebugOverride: GridStore.shared.widgetDebugOverride() != nil, drawing: drawing)
         // Periodic self-heal, same as LatestProvider — see the note there.
-        Timeline(entries: [DotGridEntry(date: .now, drawing: drawing(for: configuration))],
-                 policy: .after(.now + 30 * 60))
+        return Timeline(entries: [DotGridEntry(date: .now, drawing: drawing)],
+                        policy: .after(.now + 30 * 60))
     }
 
     private func drawing(for configuration: SelectFriendIntent) -> DisplayDrawing? {

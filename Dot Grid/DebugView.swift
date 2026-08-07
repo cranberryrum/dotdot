@@ -64,6 +64,7 @@ struct DebugView: View {
     @AppStorage(DebugFlags.widgetPreviewKey) private var widgetPreview = WidgetPreviewState.off
     @AppStorage(DebugFlags.widgetPreviewFriendKey) private var widgetPreviewFriend = true
     @AppStorage(DebugFlags.widgetPreviewReactionKey) private var widgetPreviewReaction = false
+    @State private var widgetDiagnostics: [GridStore.WidgetDiagnostic] = []
 
     var body: some View {
         NavigationStack {
@@ -143,6 +144,45 @@ struct DebugView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Section("Widget diagnostics") {
+                    if widgetDiagnostics.isEmpty {
+                        Text("No widget activity recorded yet. Reload the widgets (send/receive something, or reopen the app), then come back here.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(widgetDiagnostics) { entry in
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack {
+                                    Text("\(entry.providerKind) · \(entry.family) · \(entry.method)")
+                                        .font(.callout.weight(.semibold))
+                                    Spacer()
+                                    Text(entry.at.formatted(.relative(presentation: .named)))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text(entry.resultSummary)
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                if entry.isPreview || entry.hadDebugOverride {
+                                    Text([entry.isPreview ? "gallery preview" : nil,
+                                          entry.hadDebugOverride ? "debug override active" : nil]
+                                        .compactMap { $0 }.joined(separator: " · "))
+                                        .font(.caption2).foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                        HStack {
+                            Button("Refresh") { widgetDiagnostics = GridStore.shared.widgetDiagnostics() }
+                            Spacer()
+                            Button("Clear log", role: .destructive) {
+                                GridStore.shared.clearWidgetDiagnostics()
+                                widgetDiagnostics = []
+                            }
+                        }
+                    }
+                    Text("Every time either widget (small or large, default or per-friend) asks for content, it's logged here — including whether it thought it was in gallery preview mode, and whether the debug override above was active. This is the ground truth for what each widget actually computed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("First-time hints") {
                     Toggle("Replay first-time hints", isOn: $replayFirstRuns)
                     Text("While on, one-shot hints play every time instead of just the first few — the pull-up chevron when a photo lands, and the inbox notifications nudge (if notifications are off). Budgets aren't consumed while replaying.")
@@ -182,6 +222,7 @@ struct DebugView: View {
             .onChange(of: widgetPreview) { applyWidgetPreview() }
             .onChange(of: widgetPreviewFriend) { applyWidgetPreview() }
             .onChange(of: widgetPreviewReaction) { applyWidgetPreview() }
+            .onAppear { widgetDiagnostics = GridStore.shared.widgetDiagnostics() }
         }
         .preferredColorScheme(.dark)
     }

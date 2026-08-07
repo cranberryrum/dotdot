@@ -427,6 +427,40 @@ struct GridStore {
         encode(override, forKey: Self.debugWidgetOverrideKey)
     }
 
+    // MARK: - Widget diagnostics (what a provider actually computed, and when)
+
+    private static let widgetDiagnosticsKey = "debug.widgetDiagnostics"
+    static let widgetDiagnosticsLimit = 24
+
+    /// One provider invocation's result, recorded so the debug panel can show
+    /// what each widget size actually saw without needing device console access.
+    struct WidgetDiagnostic: Codable, Identifiable {
+        var id = UUID()
+        var at: Date
+        var providerKind: String   // "latest" or "friend"
+        var method: String         // "snapshot" or "timeline"
+        var family: String         // "systemSmall", "systemLarge", ...
+        var isPreview: Bool
+        var hadDebugOverride: Bool
+        var resultSummary: String
+    }
+
+    /// Newest-first, capped so this never grows unbounded.
+    func widgetDiagnostics() -> [WidgetDiagnostic] {
+        decode([WidgetDiagnostic].self, forKey: Self.widgetDiagnosticsKey) ?? []
+    }
+
+    func recordWidgetDiagnostic(_ diagnostic: WidgetDiagnostic) {
+        var items = widgetDiagnostics()
+        items.insert(diagnostic, at: 0)
+        if items.count > Self.widgetDiagnosticsLimit { items = Array(items.prefix(Self.widgetDiagnosticsLimit)) }
+        encode(items, forKey: Self.widgetDiagnosticsKey)
+    }
+
+    func clearWidgetDiagnostics() {
+        defaults?.removeObject(forKey: Self.widgetDiagnosticsKey)
+    }
+
     // MARK: - Reset (iCloud account switch starts fresh)
 
     func clearSharedState() {
@@ -438,7 +472,8 @@ struct GridStore {
                     Self.localEchoUpdatedAtKey, Self.latestReceivedUpdatedAtKey,
                     Self.outboxKey, Self.receivedHistoryKey, Self.sentHistoryKey, Self.latestReceivedAtKey,
                     Self.latestReceivedIngestedAtKey, Self.pendingIncomingRecordNamesKey,
-                    Self.lastDrawingFetchKey, Self.lastDrawingServerFetchKey, Self.debugWidgetOverrideKey] {
+                    Self.lastDrawingFetchKey, Self.lastDrawingServerFetchKey, Self.debugWidgetOverrideKey,
+                    Self.widgetDiagnosticsKey] {
             defaults.removeObject(forKey: key)
         }
         for id in friendIDs {
